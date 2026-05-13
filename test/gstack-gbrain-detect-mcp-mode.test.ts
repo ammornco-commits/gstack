@@ -264,6 +264,7 @@ describe('schema regression', () => {
       'gbrain_config_exists',
       'gbrain_doctor_ok',
       'gbrain_engine',
+      'gbrain_local_status',
       'gbrain_mcp_mode',
       'gbrain_on_path',
       'gbrain_version',
