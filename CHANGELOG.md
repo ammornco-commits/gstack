@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.40.0.2] - 2026-05-20
+
+## **Cmd+Q on the browser actually means quit. Process supervisors stop respawning on user-initiated close.**
+## **Chromium exit code is read for what it is: 0 = user wanted this, non-zero = real crash.**
+
+Every browse-server `browser.on('disconnected')` handler exited with a non-zero code regardless of why Chromium left. Process supervisors (gbrowser's gbd HealthMonitor) consumed that as a crash signal and respawned the whole stack on exponential backoff, so a user who Cmd+Q'd the visible browser saw a fresh window pop back 1s later, then 2s, then 4s. The fix reads the underlying ChildProcess's exit code at disconnect time: code 0 + no signal means the user closed Chromium cleanly, anything else means it crashed. We then exit 0 on clean and preserve the legacy per-path code on crash (launch→1, launchHeaded→2, handoff→1). Process supervisors get the signal they were always missing: 0 = "user wanted this, leave it alone"; non-zero = "please bring me back."
+
+### The numbers that matter
+
+Source: `bun test browse/test/browser-manager-unit.test.ts` ... 9 tests across the cause-resolver, all green.
+
+| Surface | Before | After |
+|---|---|---|
+| macOS Cmd+Q on browse-server-managed Chromium | Server exits 1 (or 2 for headed) → supervisor sees crash → respawns with 1s→2s→4s→8s→16s backoff | Server exits 0 → supervisor treats as user intent → does not respawn |
+| Chromium genuinely crashes (SIGSEGV, OOM) | Server exits 1 → respawn | Server exits 1 → respawn (preserved) |
+| Headed Chromium hard-killed (SIGKILL) | Server exits 2 → respawn | Server exits 2 → respawn (preserved) |
+| `handoff()` browser closed during a session | Server exits 1 → respawn | Same clean-vs-crash discrimination as `launch()` |
+| Disconnect handlers | 3 sites, each rolling its own exit logic | 1 helper (`resolveDisconnectCause`) consumed at all 3 sites |
+
+### What this means for builders
+
+If you Cmd+Q a browse-server-managed Chromium window, the window stays gone. The CLI process exits cleanly. Process supervisors leave it alone. The crash-recovery path (Chromium dying mid-task to SIGSEGV / SIGKILL / OOM) still works exactly the same: non-zero exit, supervisor respawns. Reconnect any time with `$B connect` or by re-running your gbd. Pull and your next Cmd+Q is final.
+
+### Itemized changes
+
+#### Added
+
+- `browse/src/browser-manager.ts` (new exports) — `resolveDisconnectCause(browser)` reads the Playwright `Browser.process()` ChildProcess exit code + signal code, returns `'clean'` (exit 0, no signal) or `'crash'` (anything else). Waits up to 1s for the exit if `'disconnected'` fires before the child has fully exited. `handleChromiumDisconnect(browser)` is the headless `launch()` site's one-line dispatcher that consumes the resolver and exits 0 or 1 accordingly.
+- `browse/test/browser-manager-unit.test.ts` — seven new tests pinning the resolver across already-exited / signal-killed / async-exit / null-browser inputs.
+
+#### Fixed
+
+- `browse/src/browser-manager.ts` `launch()` disconnect handler — now exits 0 on clean user-quit, 1 on crash. Previously always exited 1.
+- `browse/src/browser-manager.ts` `launchHeaded()` disconnect handler — clean user-quit exits 0; crash preserves the legacy code 2 so existing supervisors that distinguish "headed crash" from "headless crash" continue to work. `onDisconnect()` cleanup callback fires in both cases.
+- `browse/src/browser-manager.ts` `handoff()` disconnect handler — same clean-vs-crash discrimination via the shared helper so a Cmd+Q after a headless→headed handoff doesn't trigger respawn either.
+
 ## [1.40.0.0] - 2026-05-16
 
 ## **gbrain sync stops biting users across the install path, slug algorithm, federation queue, and `.env.local` footgun.**
