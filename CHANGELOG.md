@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.41.1.0] - 2026-05-18
+
+## **Seven HIGH-severity audit bugs land with regression tests pinning every fix.**
+## **A new test suite caught a real race in the contributor's cleanup path — fixed before the wave shipped.**
+
+The external audit wave originally filed in #1169 lands as one consolidated release after rebasing onto v1.40.0.0 and adding regression coverage. The original commit for the disconnect-handler crash was dropped because that bug was independently fixed since v1.6.4.0; the remaining seven HIGH-severity bugs all reproduce on current main and ship with tests. The contributor's `downloadFile` cleanup path turned out to race with Node's `createWriteStream` lazy FD open — the new test caught it and the wave includes a follow-up fix that awaits the writer's `'close'` event before unlinking.
+
+### The numbers that matter
+
+Source: `bun test test/regression-pr1169-*.test.ts test/global-discover.test.ts browse/test/regression-pr1169-pdf-from-file-invalid-json.test.ts browse/test/security-classifier-download-cleanup.test.ts` — 51 assertions across 5 files, all green. Full `bun test` suite exits 0.
+
+| Surface | Before | After |
+|---|---|---|
+| `scripts/build-app.sh` rebrand with a `$APP_NAME` containing `/`, `&`, or `\` | sed `s///` either broke or interpreted the literal as syntax; trailing `\|\| true` hid the failure | `$APP_NAME` is escaped (`& / \`) before interpolation; runtime regression test round-trips hostile names through real `sed` |
+| `scripts/build-app.sh` DMG step when `mktemp -d` fails | `$DMG_TMP` was empty; next line `cp -a "$APP_DIR" "$DMG_TMP/"` copied the bundle into the filesystem root | Explicit guard exits non-zero before `cp`; fake-mktemp PATH stub asserts the guard fires |
+| `bin/gstack-telemetry-sync` and `supabase/verify-rls.sh` when mktemp fails | Fallback to `/tmp/...-$$` — predictable PID path lets an attacker pre-create or symlink the response file | mktemp failure skips/aborts cleanly; static invariants forbid any `mktemp \|\| echo` fallback shape |
+| `browse/src/security-classifier.ts` `downloadFile` on reader rejection mid-stream | FD leaked; half-written `<dest>.tmp.<pid>` survived to be promoted by the next retry's `renameSync` | Writer is awaited via `'close'` event before unlinking, so the lazy FD open can't race the cleanup. Three failure paths covered: reader rejects, non-2xx response, missing body |
+| `browse/src/meta-commands.ts` `pdf --from-file` with malformed payload | `JSON.parse` threw a raw `SyntaxError` to the user; arrays/null/primitives silently passed shape check | Wrapped `JSON.parse`; rejects array, number, string, boolean, null with a useful error referencing the file path |
+| `bin/gstack-global-discover.ts` `extractCwdFromJsonl` on session headers >8KB | Read cap landed mid-line; `JSON.parse` threw on the truncated tail and the project disappeared from `/gstack` discovery | 64KB read cap; trailing partial segment is dropped so it can't poison earlier complete lines |
+
+### What this means for builders
+
+If you build the GStack Browser DMG from a workstation where `/tmp` is constrained, the build fails cleanly instead of cp'ing your app bundle into `/`. If you run `gstack-telemetry-sync` or `verify-rls.sh` on a shared host, mktemp failure aborts the run instead of writing through a predictable PID path. If the security classifier's model download hits a transient mid-stream error, the next retry sees a clean slate instead of inheriting a truncated ONNX file. If you run `/gstack` discovery across long-headered Claude Code sessions, the project shows up. Run `/gstack-upgrade` to pick up the fixes; no migration needed.
+
+### Itemized changes
+
+### Added
+- Regression tests for every audit bug shipping in this wave: `test/regression-pr1169-build-app-sed.test.ts`, `test/regression-pr1169-mktemp-fallbacks.test.ts`, `test/global-discover.test.ts` (new `extractCwdFromJsonl 64KB cap` describe block), `browse/test/regression-pr1169-pdf-from-file-invalid-json.test.ts`, `browse/test/security-classifier-download-cleanup.test.ts`. 51 assertions across 5 files.
+
+### Fixed
+- `scripts/build-app.sh`: escape sed replacement metachars (`&`, `/`, `\`) in `$APP_NAME` before the Chromium rebrand `s///` runs. Contributed by @RagavRida.
+- `scripts/build-app.sh`: bail out cleanly when `mktemp -d` for the DMG staging dir returns empty or a non-directory, so a failure can't trick `cp -a` into copying into `/`. Contributed by @RagavRida.
+- `bin/gstack-telemetry-sync`: drop the predictable `/tmp/gstack-sync-$$` fallback when `mktemp` fails; skip the run with a stderr note and clean the response file via an EXIT trap on the happy path. Contributed by @RagavRida.
+- `supabase/verify-rls.sh`: drop the predictable `/tmp/verify-rls-$$-$TOTAL` fallback when `mktemp` fails; return non-zero from the check. Contributed by @RagavRida.
+- `browse/src/security-classifier.ts`: `downloadFile` now awaits the writer's `'close'` event before unlinking the tmp file. The original cleanup path raced with Node's lazy FD open — naive `unlinkSync` hit ENOENT, then `writer.destroy()` finished asynchronously and re-created the file. Caught by the new test suite.
+- `browse/src/security-classifier.ts`: `downloadFile` wraps the read loop in try/catch; on reader rejection, writer error, or non-2xx response the half-written tmp is unlinked and the FD is closed. Contributed by @RagavRida.
+- `browse/src/meta-commands.ts`: `parsePdfFromFile` wraps `JSON.parse` and rejects top-level primitives (array, number, string, boolean, null) with a useful error pointing at the offending file. Contributed by @RagavRida.
+- `bin/gstack-global-discover.ts`: `extractCwdFromJsonl` reads 64KB (up from 8KB) and drops the trailing partial segment before parsing, so Claude Code sessions with long headers stop disappearing from discovery output. Contributed by @RagavRida.
+
+### For contributors
+- `downloadFile`, `parsePdfFromFile`, and `extractCwdFromJsonl` are now exported from their respective modules for test access. Pattern matches the existing `normalizeRemoteUrl` export in `bin/gstack-global-discover.ts`.
+
 ## [1.40.0.0] - 2026-05-16
 
 ## **gbrain sync stops biting users across the install path, slug algorithm, federation queue, and `.env.local` footgun.**
