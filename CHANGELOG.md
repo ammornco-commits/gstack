@@ -93,6 +93,37 @@ If you run `/retro` on a Conductor branch that's been around for a few days, the
 - Defer-doc artifact `~/.gstack-dev/plans/1539-framework-aware-review.md` describes the multi-week framework-aware ORM verification extension (Django/Rails/SQLAlchemy detection, model-introspection helpers, migration-history-aware checks) intentionally deferred from this wave. Promote to active plan when v1.43.0.0 ships and a second high-volume FP report lands on a different framework, or a follow-up retro shows the lighter quoted-line gate doesn't deliver measurable FP reduction.
 - Wave shape preserved from Daegu pattern: ONE bundled PR with bisect commits, atomic squashed commits for `.tmpl` edit + `gen:skill-docs` regen pairs, intermediate verification checkpoints, original contributors credited in commit author + footer. See `[[feedback_one_pr_fix_waves]]` in agent memory.
 
+## [1.43.0.0] - 2026-05-20
+
+## **iOS QA on a real iPhone — no XCTest, no WebDriverAgent, no simulators.**
+## **Verified end-to-end on a real iPhone 17 Pro Max running iOS 26.5; any agent that speaks HTTP can run full QA against a real iOS app, locally over USB or remotely over Tailscale.**
+
+Five new skills (`/ios-qa`, `/ios-fix`, `/ios-design-review`, `/ios-clean`, `/ios-sync`) bring the fork from `time-attack/gstack` into upstream with the hardening it needed to actually ship. The architecture's load-bearing insight: drop XCTest, drop the simulator, drop WebDriverAgent. Embed an HTTP server in the iOS app under test, drive it from a Mac-side bun daemon over the USB CoreDevice IPv6 tunnel. The agent reads your Swift source, codegens typed `@Observable` accessors via a SwiftPM swift-syntax tool (with a TS fallback for fast first-runs), deploys a debug bridge, and runs a closed find→fix→verify loop. With the optional `--tailnet` flag, the Mac daemon also binds Tailscale and accepts authenticated remote calls — your Mac plus an iPhone you already own becomes the iOS QA surface for any agent on your tailnet.
+
+Two Mac-side CLIs ship alongside the skills: `gstack-ios-qa-daemon` brokers traffic between the agent and the connected iPhone, and `gstack-ios-qa-mint` is the owner-grant tool for the tailnet allowlist (grant / revoke / list). The full end-to-end walkthrough lives at [docs/howto-ios-testing-with-gstack.md](docs/howto-ios-testing-with-gstack.md).
+
+SwiftUI Buttons synthesized-tap support: on iOS 18+ the hit-test resolves through `_UIHitTestContext` and walks up to `SwiftUI.UIKitGestureContainer` (a UIResponder that isn't a UIView). The KIF-derived `DebugBridgeTouch` Objective-C target passes that responder through to `UITouch.setView:` directly, mirroring KIF PR #1323. Verified live: counter went 0 → 4 across four `POST /tap` requests on a real iPhone 17 Pro Max running iOS 26.5.
+
+### The numbers that matter
+
+Source: 81 daemon unit/integration tests + 20 codegen tests + 8 high-level E2E tests + the real-iPhone smoke run (commit `cf65bb05`), all reproducible from the fixture at `test/fixtures/ios-qa/FixtureApp/`.
+
+| Surface | Fork as-is | Shipped |
+|---|---|---|
+| StateServer bind | `0.0.0.0:9999`, zero auth | `::1` + `127.0.0.1` only; bearer-token gate; boot token rotates within ~5s of daemon spawn so anything scraping `os_log` past then sees a dead credential |
+| SwiftUI Button taps on iOS 18+ | synthesized taps silently dropped (hit-test walks past `SwiftUI.UIKitGestureContainer` because it isn't a UIView) | `DBT_HitTestView` returns the responder as-is and `UITouch.setView:` accepts it; verified live on iOS 26.5 |
+| Release-build safety | none (any `#if DEBUG` mistake ships the bridge) | structural `Package.swift` `.when(configuration: .debug)` + CI `swift build -c release` invariant test that fails if the `DebugBridge` symbol appears |
+| SPM package shape | one target, missing the Obj-C touch synth implementation entirely | three drop-in product targets — `DebugBridgeCore` (Swift, cross-platform), `DebugBridgeTouch` (Obj-C, iOS-only, KIF-derived), `DebugBridgeUI` (Swift, iOS-only); the consuming app adds one dependency on `DebugBridgeUI` and gets the rest transitively |
+| Codegen failure modes covered | regex breaks on computed properties, generics, multi-line types | swift-syntax AST (production), strict TS regex fallback for tests; 3 dedicated fixtures pin the known failure shapes |
+| Multi-agent device contention | none | per-device session lock with sliding timeout on mutations only; concurrent `/session/acquire` race test |
+| Remote control | not in scope | Tailscale identity-gated `/auth/mint`; capability tiers (observe/interact/mutate/restore); 1h default session TTL (24h cap); audit log of every authenticated mutating request; hashed-identity attempts log; `gstack-ios-qa-mint` CLI is the explicit allowlist surface |
+| Hardcoded paths | 3 `/Users/sinmat/.gstack/...` paths | none — all paths use `$HOME` / `os.homedir()` |
+| Test coverage | none | 109 tests covering session-lock concurrency, snapshot/restore atomicity with schema-hash gate, identity canonicalization (user / tag / node-key), capability tier enforcement, rate limits, body-size limits, boot-token leak proofs, tailnet fail-closed probe, CoreDevice tunnel reconnect plumbing, cache-key composite (Swift version + tool git rev + source content + platform triple), and the new launcher CLIs (`gstack-ios-qa-daemon` + `gstack-ios-qa-mint`) end-to-end |
+
+### What this means for iOS developers
+
+You can ship a SwiftUI app, add the `DebugBridge` SPM dep, run `/ios-qa`, and watch an agent drive your phone — taps, swipes, state writes, the whole loop. The "Driven by Claude Code" overlay confirms the device is agent-controlled in real time. Hand the box to a colleague over Tailscale and they can run QA from their laptop without touching the device. The Mac-side daemon enforces capability tiers, so the contractor who only needs to take screenshots can't write state; the CI runner that needs to set up a test scenario can do so without being able to call `/state/restore`. The audit log gives you per-request forensics. The structural Release-build guard means the bridge cannot ship to TestFlight even if a developer forgets `/ios-clean`.
+
 ## [1.42.2.0] - 2026-05-20
 
 ## **Headed Chromium stops shipping the yellow `--no-sandbox` infobar, and Cmd+Q on the managed window stops triggering the supervisor respawn loop.**
@@ -335,6 +366,44 @@ If you `/sync-gbrain` inside a framework project (Next.js, Prisma, Rails, etc.),
 
 #### Added
 
+- **`/ios-qa`** (770-line SKILL.md.tmpl) — live-device QA flow with warm-start session cache, on-demand daemon spawn, Tailscale opt-in, demo + recording modes, full failure-mode + recovery matrix.
+- **`/ios-fix`** — autonomous bug fixer that captures a reproducing `/state/snapshot` BEFORE editing source, then rebuilds + redeploys + verifies. Snapshot becomes a regression test fixture.
+- **`/ios-design-review`** — 10-dimension Apple HIG audit on a real device. 0-10 scores per dimension with "what would make it a 10" framing, mirroring `/plan-design-review`'s rubric for browser.
+- **`/ios-clean`** — convenience wrapper that strips `DebugBridge` SPM + `#if DEBUG` wiring. Explicitly NOT the safety-critical path — the structural Release-build guard in `Package.swift` is.
+- **`/ios-sync`** — regenerates accessors against latest upstream gstack templates. Run after upgrading gstack or adding new `@Observable` classes.
+- `ios-qa/templates/StateServer.swift.template` — dual-stack loopback bind (`::1` + `127.0.0.1`), boot token rotation, per-device session lock with mutation-only sliding window, snapshot/restore with schema envelope (`_schema_version` + `_app_build_id` + `_accessor_hash`), validate-then-apply atomicity via a single canonical-state-struct assignment, 1MB body cap.
+- `ios-qa/templates/DebugOverlay.swift.template` — animated brand-colored border, agent attribution chip (`X-Agent-Identity` header, display-only, never trusted for auth), optional recording-mode watermark for screencasts.
+- `ios-qa/templates/Package.swift.template` — DebugBridge target gated `.when(configuration: .debug)`. SwiftPM refuses to link in Release config.
+- `ios-qa/daemon/` — Mac-side bun/TS daemon. Single-instance flock + readiness protocol, fail-closed tailscaled LocalAPI probe, dual-track `/auth/mint` (self-service for allowlisted identities, owner-granted via CLI), capability-tier allowlist on the tailnet listener, hashed-identity attempts log, every authenticated mutating tailnet request audited.
+- `ios-qa/scripts/gen-accessors-tool/` — SwiftPM tool plugin using swift-syntax for production codegen.
+- `ios-qa/scripts/gen-accessors.ts` — TS fallback for fast first-runs and CI. Same composite cache key (`sha256(source || swift_version || tool_git_rev || platform_triple)`) — codex flagged that source-only hash misses generator-logic changes.
+- `ios-qa/docs/tailscale-acl-example.md` — runnable example covering tailscaled ACL setup, owner-mint flow, capability tiers, audit log structure, rate limits, and token lifetime.
+- `test/skill-e2e-ios.test.ts` — 8 end-to-end scenarios covering codegen + daemon + stub StateServer + Tailscale gating + capability tiers.
+- 67 daemon unit/integration tests across `session-tokens`, `allowlist`, `auth-mint`, `single-instance`, `tailscale-localapi`, `audit`, `proxy-classify`, `daemon-integration`.
+- 20 codegen tests in `ios-qa/scripts/gen-accessors.test.ts` covering parse, cache key composition, cache hit/miss, 30d prune, and the 3 fork-regex-failure-mode fixtures.
+
+#### Changed
+
+- `test/helpers/touchfiles.ts` — registered `ios-qa-e2e` touchfile (gate-tier, fires when any `ios-*/` dir changes) so diff-based selection picks up iOS work.
+- `AGENTS.md`, `docs/skills.md` — added "iOS QA" sections covering the five new skills.
+
+#### Hardened (codex-flagged in the plan-review outside voice pass)
+
+- iOS StateServer is loopback-only ALWAYS. Tailnet ingress is exclusively the Mac daemon's responsibility — the iPhone has no way to validate Tailscale identities, so identity validation MUST be Mac-side. The plan caught and removed an earlier contradiction that would have had the iOS app binding tailnet directly.
+- Boot token rotates within ~5s of daemon spawn so anything scraping `os_log` past then sees a dead credential. The fork wrote the boot token to `os_log` once and used it for the daemon's lifetime — a durable-credential-in-logs smell.
+- `/auth/mint` trust model split into two distinct mechanisms: self-service (caller must already be in allowlist) and owner-granted (CLI on the Mac writes to the allowlist file). Self-service NEVER auto-allowlists. The fork ambiguously mixed both paths.
+- Snapshot envelope includes `_accessor_hash` so a snapshot captured against an older app build is loudly rejected with 409 schema_mismatch instead of silently corrupting state.
+- `GET /state/snapshot` returns ONLY fields marked `@Snapshotable`. Default-deny instead of default-leak — keeps tokens, PII, and auth state out of agent visibility unless explicitly opted in.
+- Tailnet listener fails closed if tailscaled LocalAPI is unreachable. Daemon refuses to open the tailnet listener at all rather than half-starting.
+- `X-Agent-Identity` header is display-only. Never read for auth or for audit beyond the display chip — the daemon-minted token is what determines capability tier.
+
+#### For contributors
+
+- New SwiftPM tool dependency: `swift-syntax`. First run builds the dependency tree (2-5 min on a cold machine, ~50ms thereafter via content-hash cache). Document the "first-time setup" UX in `/ios-qa` so users know what's happening.
+- The TS fallback in `ios-qa/scripts/gen-accessors.ts` is what tests + CI exercise. Production users get the Swift tool when available; CI never waits 5 minutes for swift-syntax to build.
+- All daemon HTTP egress goes through `JSON.stringify(payload, sanitizeReplacer)` to strip lone UTF-16 surrogates before they reach the Anthropic API — mirrors `browse/src/sanitize-replacer.ts`. Tunnel-denial logging mirrors `browse/src/tunnel-denial-log.ts`. No new auth/logging primitives.
+
+Contributed by @sinacodedit (forked from time-attack/gstack).
 - `lib/gbrain-exec.ts` (new, ~175 lines) — single source of truth for gbrain CLI invocation. `buildGbrainEnv` seeds DATABASE_URL from `${GBRAIN_HOME:-$HOME/.gbrain}/config.json`, with `GSTACK_RESPECT_ENV_DATABASE_URL=1` opt-out for the rare case where the brain intentionally lives in the project's local DB. `spawnGbrain` / `execGbrainJson` / `execGbrainText` / `spawnGbrainAsync` wrappers always inject the seeded env. Returns a fresh env object every call (no mutable identity leak).
 - `bin/gstack-gbrain-sync.ts`: `derivePathOnlyHashLegacyId`, `gbrainSupportsSourcesRename` (exact-command feature check), `sourceLocalPath`, `planHostnameFoldMigration`, `removeOrphanedSource`. Hostname-fold migration: detect old form → probe path-drift → rename in place (if supported) → fall back to register-new + sync-OK + remove-old.
 - `gstack-upgrade/migrations/v1.40.0.0.sh` — idempotent jq-based migration for `.brain-allowlist`, `.brain-privacy-map.json`, `.gitattributes` to add `projects/*/*-eng-review-test-plan-*.md`. Targeted in-place repair; never `git commit + push`.
