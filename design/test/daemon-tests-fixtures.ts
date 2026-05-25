@@ -65,15 +65,10 @@ export async function spawnDaemonForTest(
 ): Promise<SpawnedDaemon> {
   const stateFile = opts.stateFile ?? path.join(makeTmpDir("daemon-state"), "design.json");
   const env: Record<string, string> = {
-    ...process.env,
-    // Point both daemon and any same-process discovery at this state file.
+    ...(process.env as Record<string, string>),
+    // DESIGN_DAEMON_STATE_FILE points both daemon and any same-process
+    // discovery at this test's state file (overrides resolveStateFilePath).
     DESIGN_DAEMON_STATE_FILE: stateFile,
-    // Override the resolveStateFilePath default by setting cwd to a non-git
-    // tmp dir and pre-writing a marker — but easier: env vars consumed by
-    // daemon-state aren't currently a thing; for now the daemon writes to
-    // its own resolved path. Caller passes `stateFile` if they want a
-    // specific location. Tests that need a custom path set the cwd via env.
-    GIT_DIR: "/nonexistent-to-force-cwd-fallback",
     DESIGN_DAEMON_IDLE_MS: String(opts.idleMs ?? 60_000),
     DESIGN_DAEMON_CHECK_MS: String(opts.checkMs ?? 1000),
     DESIGN_DAEMON_VERSION: "test-version",

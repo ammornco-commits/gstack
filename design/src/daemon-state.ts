@@ -27,6 +27,10 @@ export interface DaemonState {
 export const CMDLINE_MARKER = "gstack-design-daemon";
 
 export function resolveStateFilePath(): string {
+  // Env override has highest precedence so tests can point both client and
+  // spawned daemon at a per-test path without a shared cwd.
+  const envOverride = process.env.DESIGN_DAEMON_STATE_FILE;
+  if (envOverride) return envOverride;
   try {
     const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       encoding: "utf8",
