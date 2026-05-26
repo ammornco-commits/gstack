@@ -1,6 +1,6 @@
 {
   "$schema": "https://gstack.dev/schemas/proactive-suggestions.json",
-  "generated_at": "2026-05-26T03:38:39.509Z",
+  "generated_at": "2026-05-26T03:40:01.996Z",
   "catalog_mode": "trim",
   "note": "Routing / voice-trigger prose extracted from SKILL.md frontmatter descriptions during catalog trim. Loaded on demand when routing guidance is needed.",
   "skills": {
