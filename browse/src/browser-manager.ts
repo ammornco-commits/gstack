@@ -18,6 +18,7 @@
 import { chromium, type Browser, type BrowserContext, type BrowserContextOptions, type Page, type Locator, type Cookie } from 'playwright';
 import { writeSecureFile, mkdirSecure } from './file-permissions';
 import { addConsoleEntry, addNetworkEntry, addDialogEntry, networkBuffer, type DialogEntry } from './buffers';
+import { emitActivity } from './activity';
 import { validateNavigationUrl } from './url-validation';
 import { TabSession, type RefEntry } from './tab-session';
 import { resolveChromiumProfile, cleanSingletonLocks } from './config';
@@ -195,6 +196,51 @@ export class BrowserManager {
   // ─── Headed State ────────────────────────────────────────
   private connectionMode: 'launched' | 'headed' = 'launched';
   private intentionalDisconnect = false;
+
+  // ─── Tab Count Guardrail (D5 + Codex single-tab flag) ───────
+  // Idempotent threshold trackers: each guardrail fires exactly once per
+  // upward crossing of its threshold and re-arms when the tab count drops
+  // back below. Pre-guardrail, nothing tracked tab count growth and a
+  // user could accumulate hundreds of tabs (each holding 50–300 MB of
+  // Chromium-side RSS) without warning until the OS OOM-killer fired.
+  // The toast UX lives in the sidebar (extension/sidepanel.js); the
+  // server-side responsibility is the audit-trail activity entry that
+  // appears in the activity feed even when the sidebar is closed.
+  private static readonly TAB_GUARDRAIL_SOFT = 50;
+  private static readonly TAB_GUARDRAIL_HARD = 200;
+  private tabGuardrailSoftHit = false;
+  private tabGuardrailHardHit = false;
+
+  /**
+   * Called from context.on('page') after a new tab is tracked. Emits at
+   * most one activity entry per upward crossing of each threshold.
+   */
+  private checkTabGuardrails(): void {
+    const total = this.pages.size;
+    if (!this.tabGuardrailSoftHit && total >= BrowserManager.TAB_GUARDRAIL_SOFT) {
+      this.tabGuardrailSoftHit = true;
+      const msg = `Tab count crossed ${BrowserManager.TAB_GUARDRAIL_SOFT} (now ${total}). Consider closing unused tabs — each Chromium tab holds 50–300 MB.`;
+      console.warn(`[browse] ${msg}`);
+      emitActivity({ type: 'error', command: 'tab-guardrail', error: msg, tabs: total });
+    }
+    if (!this.tabGuardrailHardHit && total >= BrowserManager.TAB_GUARDRAIL_HARD) {
+      this.tabGuardrailHardHit = true;
+      const msg = `Tab count crossed ${BrowserManager.TAB_GUARDRAIL_HARD} (now ${total}). OOM risk imminent. Open the sidebar to see top RAM consumers.`;
+      console.error(`[browse] ${msg}`);
+      emitActivity({ type: 'error', command: 'tab-guardrail', error: msg, tabs: total });
+    }
+  }
+
+  /** Called from page.on('close') so the guardrails re-arm. */
+  private recheckTabGuardrailsOnClose(): void {
+    const total = this.pages.size;
+    if (this.tabGuardrailSoftHit && total < BrowserManager.TAB_GUARDRAIL_SOFT) {
+      this.tabGuardrailSoftHit = false;
+    }
+    if (this.tabGuardrailHardHit && total < BrowserManager.TAB_GUARDRAIL_HARD) {
+      this.tabGuardrailHardHit = false;
+    }
+  }
 
   // Called when the headed browser disconnects without intentional teardown
   // (user closed the window). Wired up by server.ts to run full cleanup
@@ -622,6 +668,7 @@ export class BrowserManager {
       // Inject indicator on the new tab
       page.evaluate(indicatorScript).catch(() => {});
       console.log(`[browse] New tab detected (id=${id}, total=${this.pages.size})`);
+      this.checkTabGuardrails();
     });
 
     // Persistent context opens a default page — adopt it instead of creating a new one
@@ -1642,6 +1689,7 @@ export class BrowserManager {
           break;
         }
       }
+      this.recheckTabGuardrailsOnClose();
     });
 
     // Clear ref map on navigation — refs point to stale elements after page change
