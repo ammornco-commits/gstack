@@ -91,15 +91,13 @@ function readStdin(): Promise<string> {
   });
 }
 
-function defer(): void {
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'defer',
-      },
-    }),
-  );
+function defer(additionalContext?: string): void {
+  const out: Record<string, unknown> = {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'defer',
+  };
+  if (additionalContext) out.additionalContext = additionalContext;
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: out }));
   process.exit(0);
 }
 
@@ -149,6 +147,72 @@ interface RegistryEntry {
   id: string;
   door_type?: 'one-way' | 'two-way';
   signal_key?: string;
+}
+
+interface MemoryNugget {
+  nugget: string;
+  applies_to_signal_keys: string[];
+  applied_at?: string;
+}
+
+/**
+ * Read per-session cache first, fall back to canonical local file. Cache
+ * invalidates by being missing — gstack-distill-apply doesn't touch the
+ * cache because the canonical file is always the source-of-truth on read
+ * miss. Sub-1ms cache reads (D13 perf).
+ */
+function loadMemoryNuggets(sessionId: string | undefined): MemoryNugget[] {
+  const sr = stateRoot();
+  const canonical = path.join(sr, 'free-text-memory.json');
+  let nuggets: MemoryNugget[] | null = null;
+
+  if (sessionId) {
+    const cachePath = path.join(sr, 'sessions', sessionId, 'memory-cache.json');
+    try {
+      const cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+      if (Array.isArray(cached.nuggets)) {
+        return cached.nuggets;
+      }
+    } catch {
+      // miss → fall through
+    }
+  }
+
+  try {
+    const j = JSON.parse(fs.readFileSync(canonical, 'utf-8'));
+    nuggets = Array.isArray(j.nuggets) ? j.nuggets : [];
+  } catch {
+    nuggets = [];
+  }
+
+  // Write through to the per-session cache so subsequent hooks on this
+  // session take the fast path. Best-effort; never fails the hook.
+  if (sessionId && nuggets) {
+    try {
+      const dir = path.join(sr, 'sessions', sessionId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'memory-cache.json'),
+        JSON.stringify({ nuggets, cached_at: new Date().toISOString() }, null, 2),
+      );
+    } catch {
+      // swallow
+    }
+  }
+
+  return nuggets || [];
+}
+
+/**
+ * For a given signal_key, return up to N nuggets whose applies_to_signal_keys
+ * include it. Sorted by recency (most-recently-applied first), capped.
+ */
+function nuggetsForSignal(nuggets: MemoryNugget[], signalKey: string, max = 3): string[] {
+  return nuggets
+    .filter((n) => Array.isArray(n.applies_to_signal_keys) && n.applies_to_signal_keys.includes(signalKey))
+    .sort((a, b) => (b.applied_at || '').localeCompare(a.applied_at || ''))
+    .slice(0, max)
+    .map((n) => n.nugget);
 }
 
 let registryCache: Record<string, RegistryEntry> | null = null;
@@ -314,19 +378,40 @@ async function main(): Promise<void> {
   // Mixed cases pass through (defer) so the user still gets to answer.
   const registry = loadRegistry();
   const slug = slugFromCwd(stdin.cwd);
+  const memoryNuggets = loadMemoryNuggets(stdin.session_id);
+
+  // Compute Layer 8 memory context inline: any nuggets matching the
+  // signal_keys of the questions in this AUQ get surfaced as additionalContext.
+  // This applies whether we defer OR deny — gives the agent + user the
+  // relevant prior context either way.
+  const contextNuggets: string[] = [];
+  for (const q of questions) {
+    const qText = q.question || '';
+    const marker = qText.match(MARKER_RE);
+    if (!marker) continue;
+    const entry = registry[marker[1]];
+    if (!entry?.signal_key) continue;
+    const hits = nuggetsForSignal(memoryNuggets, entry.signal_key);
+    for (const h of hits) {
+      if (!contextNuggets.includes(h)) contextNuggets.push(h);
+    }
+  }
+  const memoryContext = contextNuggets.length
+    ? '[plan-tune memory] Past answers suggest: ' + contextNuggets.join(' | ')
+    : undefined;
 
   const autoDecisions: Array<{ id: string; recommended: string }> = [];
   for (const q of questions) {
     const qText = q.question || '';
     const marker = qText.match(MARKER_RE);
     if (!marker) {
-      defer();
+      defer(memoryContext);
       return;
     }
     const questionId = marker[1];
     const pref = lookupPreference(slug, questionId);
     if (!pref.preference || pref.preference === 'always-ask') {
-      defer();
+      defer(memoryContext);
       return;
     }
 
@@ -334,7 +419,7 @@ async function main(): Promise<void> {
     const doorType = entry?.door_type || 'two-way';
     if (doorType === 'one-way') {
       // Safety override — even never-ask doesn't bypass one-way doors.
-      defer();
+      defer(memoryContext);
       return;
     }
 
@@ -342,7 +427,7 @@ async function main(): Promise<void> {
     const { recommended, ambiguous } = extractRecommended(qText, opts);
     if (!recommended || ambiguous) {
       // Refuse-on-ambiguous per D2 — fail safe, ask normally.
-      defer();
+      defer(memoryContext);
       return;
     }
     autoDecisions.push({ id: questionId, recommended });
