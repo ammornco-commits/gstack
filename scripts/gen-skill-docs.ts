@@ -424,7 +424,11 @@ export function applyCatalogTrim(content: string, skillName: string): { content:
   // parser reads as a nested mapping and rejects — #1778). toYamlInlineScalar
   // only quotes when needed, so descriptions without special chars stay plain.
   const newDesc = buildTrimmedDescription(parts);
-  const newFrontmatter = frontmatter.replace(descMatch[0], `description: ${toYamlInlineScalar(newDesc)}\n`);
+  // Function replacer (not a string) so a `$` in the description — e.g. a future
+  // skill referencing `$B`/`$D` — can't be interpreted as a `$&`/`$1` replacement
+  // pattern and silently corrupt the frontmatter.
+  const newDescLine = `description: ${toYamlInlineScalar(newDesc)}\n`;
+  const newFrontmatter = frontmatter.replace(descMatch[0], () => newDescLine);
   let newContent = '---\n' + newFrontmatter + content.slice(fmEnd);
 
   // Insert body section after frontmatter (after the closing ---\n and any
