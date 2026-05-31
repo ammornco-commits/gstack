@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.56.0.0] - 2026-05-31
+
+## **The biggest plan-review skill stopped taxing every session. /plan-ceo-review's always-loaded cost dropped 42%, and its deep review loads only when you reach it.**
+
+`/plan-ceo-review` was the heaviest skill at 138KB, and every session paid for all of it up front, even during the Step 0 scope conversation that does not need the 11-section review prose yet. It is now an 81KB decision-tree skeleton plus one `sections/review-sections.md` the agent opens on demand. The 11 review sections, the outside-voice rules, the required-output registries, the completion summary, the review report writer, and the mode quick reference all moved behind a single STOP-Read pointer that fires only after you have agreed scope and mode. All of Step 0, the conversational front half, stays in the always-loaded skeleton byte for byte. Other hosts (codex, factory, kiro, opencode) keep the full inline skill, so nothing regresses off Claude. This is the second Phase B carve after `/ship`, following the documented one-at-a-time order.
+
+### The numbers that matter
+
+Measured directly from the generated skeleton (`wc -c plan-ceo-review/SKILL.md`) and its one section file, regenerated for all hosts:
+
+| Metric | Before (v1.55) | After (v1.56) | Δ |
+|--------|----------------|---------------|---|
+| plan-ceo-review always-loaded | 138,838 B (~34.4K tokens) | 80,731 B (~20.1K tokens) | -42% |
+| review prose loaded per run | all of it | only after scope + mode agreed | on-demand |
+| skeleton + section union | 138,838 B | 139,110 B | behavior preserved |
+| External-host plan-ceo-review | inline | inline (unchanged behavior) | no regression |
+
+The skeleton is what loads the instant `/plan-ceo-review` is invoked, so the ~14.4K-token drop is paid back on every review, not once.
+
+### What this means for you
+
+A `/plan-ceo-review` run starts ~42% lighter and pulls in the 11-section review only when it reaches it, after you have agreed scope and mode. You will not notice any behavior change. The review is identical section for section; the difference is what is in context when. If you want to read the review chapter in isolation, it lives at `~/.claude/skills/gstack/plan-ceo-review/sections/review-sections.md`.
+
+### Itemized changes
+
+#### Added
+- `plan-ceo-review/sections/review-sections.md` — the 11-section deep review, outside-voice rules, required-output registries, completion summary, review report writer, next-step chaining, and mode quick reference, behind a STOP-Read pointer, with a passive `manifest.json` registry.
+- `test/skill-ceo-section-ordering.test.ts` — gate-tier static guard: the STOP fires after Step 0, the review body is absent from the skeleton, the report writer lives in the section, and nothing review-governing sits below the STOP.
+- `test/skill-e2e-plan-ceo-review-section-loading.test.ts` — periodic real-PTY backstop that refreshes the installed skill, drives the full Step 0, and asserts the section is Read before the report.
+
+#### Changed
+- `/plan-ceo-review` is a skeleton + one section on Claude; Step 0 (scope + mode) stays always-loaded; external hosts still receive the full inline skill (no behavior change off Claude).
+- Parity, size-budget, and section-manifest tests treat plan-ceo-review as a carved skill (content + size floors run against the skeleton + section union; the skeleton-shrink assertion guards the always-loaded win).
+
+#### For contributors
+- `section-manifest-consistency` now discovers every carved skill automatically, so the next Phase B carve is covered the moment its manifest lands.
+- `gen-skill-docs` and `skill-validation` read the skeleton + sections union for carved skills, so relocated prose still counts in content checks.
+
 ## [1.55.0.0] - 2026-05-30
 
 ## **`/sync-gbrain` can no longer be the trigger that lets gbrain delete your repo. The headed browser stops crash-looping, and gbrain installs the current release instead of a pin 23 versions stale.**
