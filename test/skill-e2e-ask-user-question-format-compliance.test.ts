@@ -35,6 +35,7 @@ import {
   isPermissionDialogVisible,
   parseNumberedOptions,
 } from './helpers/claude-pty-runner';
+import { FORCING_FLOOR_CEO } from './fixtures/forcing-finding-seeds';
 
 const shouldRun = !!process.env.EVALS && process.env.EVALS_TIER === 'gate';
 const describeE2E = shouldRun ? describe : describe.skip;
@@ -81,6 +82,15 @@ describeE2E('AskUserQuestion format compliance (gate)', () => {
         await Bun.sleep(8000);
         const since = session.mark();
         session.send('/plan-ceo-review\r');
+        // Deterministic trigger: hand the skill a concrete plan to review as a
+        // follow-up. Without it, a bare /plan-ceo-review against a repo whose
+        // work is already implemented makes the model improvise an off-script
+        // "what should I review?" scope question that skips the decision-brief
+        // format — a flaky non-failure that this test's timeout used to hit.
+        // The forcing plan anchors the skill to its real Step 0 → mode-selection
+        // AUQ, which is the compliant question we want to format-check.
+        await Bun.sleep(3000);
+        session.send(`${FORCING_FLOOR_CEO}\r`);
 
         // Wait for a SKILL AskUserQuestion. Strategy: poll the visible buffer until it
         // contains both a numbered-option list AND the format markers we
