@@ -32,19 +32,28 @@ describe('isErrorResponse — only clear failures, never a real answer', () => {
     expect(isErrorResponse('[Tool result missing due to internal error]')).toBe(true);
   });
 
-  test('is_error / error object shapes are failures', () => {
+  test('is_error: true / error-field / sentinel-in-content are failures', () => {
     expect(isErrorResponse({ is_error: true })).toBe(true);
     expect(isErrorResponse({ isError: true })).toBe(true);
     expect(isErrorResponse({ error: 'boom' })).toBe(true);
-    expect(isErrorResponse({ content: '...internal error...' })).toBe(true);
+    expect(isErrorResponse({ content: 'Tool result missing due to internal error' })).toBe(true);
   });
 
   test('a real answer is NOT a failure (no false trigger)', () => {
     expect(isErrorResponse({ answers: [{ option_label: 'A' }] })).toBe(false);
     expect(isErrorResponse('A')).toBe(false);
-    // a choice that coincidentally contains the word "error" must not trip it
+    // a choice that coincidentally contains "error" must not trip it
     expect(isErrorResponse({ answers: [{ option_label: 'Fix the error' }] })).toBe(false);
     expect(isErrorResponse('Investigate the login error')).toBe(false);
+  });
+
+  test('Codex review: narrow detection — generic "error"/"is_error" substrings do NOT trigger', () => {
+    // A real answer mentioning "internal error" must not be read as a failure.
+    expect(isErrorResponse('Investigate the internal error')).toBe(false);
+    // A serialized success payload containing the substring is_error:false must not trigger.
+    expect(isErrorResponse('{"is_error": false, "answer": "A"}')).toBe(false);
+    expect(isErrorResponse({ is_error: false })).toBe(false);
+    expect(isErrorResponse({ content: 'The page had an internal error we fixed' })).toBe(false);
   });
 });
 

@@ -300,13 +300,12 @@ export async function runAgentSdkTest(
   const queryImpl: QueryProvider = opts.queryProvider ?? query;
   const model = opts.model ?? 'claude-opus-4-7';
 
-  // Default GSTACK_HEADLESS=1 so SDK-driven eval/E2E runs classify as headless: an
-  // AskUserQuestion failure BLOCKs instead of emitting a prose question no human can
-  // answer. Set ambiently (the SDK child inherits process.env) rather than via
-  // sdkOpts.env — passing an env object to the SDK breaks its auth pipeline (see
-  // CLAUDE.md). A suite testing the interactive prose-fallback path sets
-  // process.env.GSTACK_HEADLESS='' before calling.
-  if (process.env.GSTACK_HEADLESS === undefined) process.env.GSTACK_HEADLESS = '1';
+  // NOTE on GSTACK_HEADLESS: the SDK child inherits process.env, so headless
+  // classification for eval/E2E runs is set by the `test:gate` / `test:evals`
+  // package.json scripts (scoped to that invocation), NOT mutated here. We must not
+  // pass sdkOpts.env (it breaks the SDK auth pipeline — see CLAUDE.md) and must not
+  // mutate process.env ambiently (it would leak headless into later interactive-path
+  // tests in the same Bun process — Codex review finding).
 
   let attempt = 0;
   let lastErr: unknown = null;

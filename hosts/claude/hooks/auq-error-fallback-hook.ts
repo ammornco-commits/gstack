@@ -98,20 +98,25 @@ export function isErrorResponse(response: unknown): boolean {
   if (typeof response === 'string') {
     const s = response.trim();
     if (s === '') return true;
-    return /tool result missing|internal error|\bis_error\b/i.test(s);
+    // Match ONLY the specific missing-result sentinel phrase, not any string that
+    // merely contains "error" — a real answer like "Investigate the internal error"
+    // must NOT trigger the fallback. (Codex review finding.)
+    return /tool result missing/i.test(s);
   }
   if (typeof response === 'object') {
     const rec = response as Record<string, unknown>;
-    if (rec.is_error === true || rec.isError === true || rec.error) return true;
+    // Structured flag must be the boolean true — not the substring "is_error" inside
+    // a serialized success payload like '{"is_error": false}'.
+    if (rec.is_error === true || rec.isError === true) return true;
+    if (typeof rec.error === 'string' && rec.error.trim() !== '') return true;
     // Some hosts wrap the payload as { content: "..." } or { content: [{text}] }.
     const content = rec.content;
-    if (typeof content === 'string') return isErrorResponse(content);
+    if (typeof content === 'string') return /tool result missing/i.test(content);
     if (Array.isArray(content)) {
       const text = content
         .map((c) => (typeof c === 'string' ? c : (c as Record<string, unknown>)?.text ?? ''))
         .join(' ');
-      if (text.trim() === '') return false; // empty content array on success is ambiguous; don't trigger
-      return /tool result missing|internal error/i.test(text);
+      return /tool result missing/i.test(text);
     }
   }
   return false;
