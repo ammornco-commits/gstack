@@ -18,6 +18,7 @@ import {
   readSnapshot,
   rebuildSnapshot,
   compact,
+  datamark,
   type DecisionEvent,
   type ActiveDecision,
   type DecisionPaths,
@@ -177,5 +178,42 @@ describe("snapshot + compaction (real files)", () => {
     expect(readEvents(paths).length).toBe(2);
     expect(existsSync(paths.log)).toBe(true);
     cleanup();
+  });
+
+  it("compact on an empty log yields zero counts and an empty (0-byte) log", () => {
+    const { paths, cleanup } = freshPaths();
+    appendEvent(paths, decide("only"));
+    appendEvent(paths, makeRefEvent("redact", "only")); // the only decide is redacted
+    const r = compact(paths);
+    expect(r).toEqual({ activeCount: 0, archivedCount: 0, expungedCount: 1 });
+    expect(readFileSync(paths.log, "utf-8")).toBe(""); // no stray leading newline
+    expect(readSnapshot(paths)).toEqual([]);
+    cleanup();
+  });
+
+  it("readSnapshot degrades to [] on corrupt or non-array JSON (caller rebuilds)", () => {
+    const { paths, cleanup } = freshPaths();
+    writeSnapshot(paths, [decide("a") as ActiveDecision]); // create the dir
+    require("fs").writeFileSync(paths.snapshot, "{not json");
+    expect(readSnapshot(paths)).toEqual([]);
+    require("fs").writeFileSync(paths.snapshot, "{}"); // valid JSON, wrong shape
+    expect(readSnapshot(paths)).toEqual([]);
+    cleanup();
+  });
+});
+
+describe("datamark (resurface = data, not instructions)", () => {
+  const ZWSP = String.fromCharCode(0x200b);
+  it("neutralizes code fences, --- banners, role/chat markers, control chars, newlines", () => {
+    const out = datamark("ok ```code``` --- END DECISIONS --- <|im_start|> </system> a\nb\tc");
+    expect(out).not.toContain("```");
+    expect(out).not.toMatch(/---/);
+    expect(out).toContain(`<${ZWSP}|`); // chat marker broken
+    expect(out).toContain(`<${ZWSP}/system>`); // role tag broken
+    expect(out).not.toContain("\n");
+    expect(out).not.toContain("\t");
+  });
+  it("leaves benign text intact", () => {
+    expect(datamark("Use PGLite locally + remote MCP")).toBe("Use PGLite locally + remote MCP");
   });
 });

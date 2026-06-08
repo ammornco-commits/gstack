@@ -16,7 +16,7 @@
 import { join } from "path";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
-import { writeFileSync, renameSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, renameSync, existsSync, readFileSync, appendFileSync } from "fs";
 import { appendJsonl, readJsonl, hasInjection } from "./jsonl-store";
 import { scan } from "./redact-engine";
 
@@ -63,6 +63,26 @@ export function decisionPaths(slug: string, gstackHome?: string): DecisionPaths 
     snapshot: join(dir, "decisions.active.json"),
     archive: join(dir, "decisions.archive.jsonl"),
   };
+}
+
+/**
+ * Datamark resurfaced decision text so a stored string can't masquerade as
+ * instructions or break out of the Context Recovery fence when it lands in agent
+ * context (codex hardening #3: resurface = DATA, not instructions). Write-time
+ * `hasInjection` is a denylist; this is the render-boundary defense-in-depth that
+ * also covers `--all`/snapshot reads and records written before a pattern existed.
+ * Neutralizes: control chars, newlines (defensive — events are single-line),
+ * code fences, `---` banner sentinels, and `<|role|>` / `</system>` markers.
+ */
+export function datamark(text: string): string {
+  const ZWSP = "\u200b"; // zero-width space: breaks token recognition, near-invisible
+  return text
+    .replace(/[\u0000-\u001f]/g, " ") // strip ASCII control chars (incl. newlines)
+    .replace(/`{3,}/g, "'''") // neutralize markdown code fences
+    .replace(/-{3,}/g, "\u2014") // neutralize `---` banner sentinels (em dash)
+    .replace(/<\|/g, `<${ZWSP}|`) // neutralize <|im_start|>-style chat markers
+    .replace(/\|>/g, `|${ZWSP}>`)
+    .replace(/<(\/?)(system|user|assistant|tool)>/gi, `<${ZWSP}$1$2>`); // neutralize role tags
 }
 
 export type ValidateResult =
@@ -116,8 +136,8 @@ export function validateDecide(input: Partial<DecisionEvent>): ValidateResult {
     rationale: input.rationale,
     alternatives_considered: input.alternatives_considered,
     scope,
-    branch: scope === "branch" ? input.branch : input.branch || undefined,
-    issue: scope === "issue" ? input.issue : input.issue || undefined,
+    branch: input.branch || undefined,
+    issue: input.issue || undefined,
     date: input.date || new Date().toISOString(),
     session: input.session,
     source,
@@ -237,7 +257,11 @@ export function compact(paths: DecisionPaths): CompactResult {
   const superseded = events.filter(
     (e): e is DecisionEvent => e.kind === "decide" && !activeIds.has(e.id) && !redactedIds.has(e.id),
   );
-  for (const e of superseded) appendJsonl(paths.archive, e);
+  // One batched append (not one open/write/close per event) — matches the atomic
+  // batched rewrite of the active log below and shrinks the mid-compact crash window.
+  if (superseded.length) {
+    appendFileSync(paths.archive, superseded.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+  }
 
   const tmp = `${paths.log}.tmp.${process.pid}`;
   writeFileSync(tmp, active.map((d) => JSON.stringify(d)).join("\n") + (active.length ? "\n" : ""), "utf-8");

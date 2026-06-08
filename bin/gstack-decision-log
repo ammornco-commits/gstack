@@ -26,32 +26,18 @@ import {
   compact,
   type DecisionEvent,
 } from "../lib/gstack-decision";
+import { resolveSlug, gitBranch, flagValue } from "../lib/bin-context";
 
 const HERE = import.meta.dir;
 
-function resolveSlug(): string {
-  const r = spawnSync(`${HERE}/gstack-slug`, { encoding: "utf-8" });
-  const m = (r.stdout || "").match(/^SLUG=(.+)$/m);
-  return m ? m[1].trim() : "unknown";
-}
-function gitBranch(): string | undefined {
-  const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8" });
-  const b = (r.stdout || "").trim();
-  return b && b !== "HEAD" ? b : undefined;
-}
-
 const args = process.argv.slice(2);
-const slug = resolveSlug();
+const slug = resolveSlug(`${HERE}/gstack-slug`);
 const paths = decisionPaths(slug);
 mkdirSync(dirname(paths.log), { recursive: true });
 
 function enqueue(): void {
   // Fire-and-forget cross-machine sync (no-op when artifacts_sync is off).
   spawnSync(`${HERE}/gstack-brain-enqueue`, [`projects/${slug}/decisions.jsonl`], { stdio: "ignore" });
-}
-function flagValue(name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
 }
 
 if (args.includes("--compact")) {
@@ -61,8 +47,8 @@ if (args.includes("--compact")) {
   process.exit(0);
 }
 
-const supersedeId = flagValue("--supersede");
-const redactId = flagValue("--redact");
+const supersedeId = flagValue(args, "--supersede");
+const redactId = flagValue(args, "--redact");
 if (supersedeId || redactId) {
   const kind = supersedeId ? "supersede" : "redact";
   const targetId = (supersedeId || redactId) as string;

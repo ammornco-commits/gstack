@@ -77,6 +77,16 @@ describe("detectAutopilot", () => {
     expect(r.active).toBe(true);
     expect(r.signal).toBe("process:gbrain autopilot");
   });
+
+  test("a lock with no parseable pid stays conservative (active, no pid in signal)", () => {
+    const tmp = fs.mkdtempSync(join(os.tmpdir(), "ap-"));
+    const lock = join(tmp, "autopilot.lock");
+    fs.writeFileSync(lock, "corrupted-no-pid-here");
+    const r = detectAutopilot(process.env, { lockPaths: [lock], processRunning: () => false });
+    expect(r.active).toBe(true); // can't introspect → don't ignore the lock
+    expect(r.signal).toContain("lock:");
+    expect(r.signal).not.toContain("pid");
+  });
 });
 
 // ── #1734 remove safety (E7: fail closed on user-managed without keep-storage) ─

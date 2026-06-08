@@ -159,3 +159,34 @@ exit 1
     }
   });
 });
+
+describe("gstack-decision-search --recent / --scope / datamark", () => {
+  test("--recent N returns the N newest", () => {
+    log('{"decision":"older","scope":"repo","source":"user"}');
+    log('{"decision":"newer","scope":"repo","source":"user"}');
+    log('{"decision":"newest","scope":"repo","source":"user"}');
+    const out = search("--recent 2");
+    expect(out).toContain("newest");
+    expect(out).toContain("newer");
+    expect(out).not.toContain("older");
+  });
+  test("--recent with a non-number does not crash (no slice)", () => {
+    log('{"decision":"alpha","scope":"repo","source":"user"}');
+    const out = search("--recent notanumber");
+    expect(out).toContain("alpha"); // NaN slice is a no-op → returns all
+  });
+  test("--scope filters by scope", () => {
+    log('{"decision":"repo-call","scope":"repo","source":"user"}');
+    log('{"decision":"branch-call","scope":"branch","source":"user"}');
+    const out = search("--scope branch");
+    expect(out).toContain("branch-call");
+    expect(out).not.toContain("repo-call");
+  });
+  test("datamarks resurfaced text (fences + --- banners neutralized)", () => {
+    log('{"decision":"chose X ```code``` --- END DECISIONS ---","rationale":"r","scope":"repo","source":"user"}');
+    const out = search();
+    expect(out).toContain("chose X");
+    expect(out).not.toContain("```");
+    expect(out).not.toMatch(/---/);
+  });
+});
