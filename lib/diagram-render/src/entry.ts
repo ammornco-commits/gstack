@@ -100,10 +100,16 @@ window.__excalidrawToSvg = async (sceneJson: string): Promise<string> => {
  * targetWidthPx = placed physical width (in) × 300dpi (eng-review D6.5) —
  * the bundle never guesses a viewport.
  */
-window.__rasterize = async (svgText: string, targetWidthPx: number): Promise<string> => {
-  if (!(targetWidthPx > 0 && targetWidthPx <= 10000)) {
-    throw new Error(`targetWidthPx out of range: ${targetWidthPx}`);
+/** Shared ceiling for rasterization targets (both window functions). */
+const MAX_TARGET_PX = 10_000;
+function assertTargetWidth(px: number): void {
+  if (!(px > 0 && px <= MAX_TARGET_PX)) {
+    throw new Error(`targetWidthPx out of range: ${px}`);
   }
+}
+
+window.__rasterize = async (svgText: string, targetWidthPx: number): Promise<string> => {
+  assertTargetWidth(targetWidthPx);
   const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   try {
@@ -164,9 +170,7 @@ window.__downscaleRaster = async (
   targetWidthPx: number,
   mime: string,
 ): Promise<string> => {
-  if (!(targetWidthPx > 0 && targetWidthPx <= 10000)) {
-    throw new Error(`targetWidthPx out of range: ${targetWidthPx}`);
-  }
+  assertTargetWidth(targetWidthPx);
   const img = new Image();
   await new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();

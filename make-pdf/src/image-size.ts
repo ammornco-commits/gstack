@@ -91,7 +91,18 @@ function webpDims(b: Buffer): ImageDims | null {
  */
 function svgDims(b: Buffer): ImageDims | null {
   const head = b.toString("utf8", 0, Math.min(b.length, 4096));
-  const tag = head.match(/<svg\b[^>]*>/i)?.[0];
+  const dims = svgTagDims(head);
+  return dims ? { ...dims, mime: "image/svg+xml" } : null;
+}
+
+/**
+ * CSS-px dimensions of the first <svg> element in a markup string: explicit
+ * width/height attributes (px or unitless) first, else viewBox. Shared by the
+ * byte prober above and image-policy's diagram-figure measurements — one
+ * regex, no drift.
+ */
+export function svgTagDims(markup: string): { width: number; height: number } | null {
+  const tag = markup.match(/<svg\b[^>]*>/i)?.[0];
   if (!tag) return null;
   const attr = (name: string): number | null => {
     const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']\\s*([0-9.]+)(px)?\\s*["']`, "i"));
@@ -99,8 +110,8 @@ function svgDims(b: Buffer): ImageDims | null {
   };
   const w = attr("width");
   const h = attr("height");
-  if (w && h) return { width: w, height: h, mime: "image/svg+xml" };
+  if (w && h) return { width: w, height: h };
   const vb = tag.match(/\bviewBox\s*=\s*["']\s*[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)[\s,]+([0-9.]+)\s*["']/i);
-  if (vb) return { width: parseFloat(vb[1]), height: parseFloat(vb[2]), mime: "image/svg+xml" };
+  if (vb) return { width: parseFloat(vb[1]), height: parseFloat(vb[2]) };
   return null;
 }

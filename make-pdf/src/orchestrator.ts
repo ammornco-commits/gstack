@@ -21,6 +21,7 @@ import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
 import { render } from "./render";
+import { screenCss } from "./print-css";
 import type { GenerateOptions, PreviewOptions } from "./types";
 import { ExitCode } from "./types";
 import * as browseClient from "./browseClient";
@@ -201,7 +202,6 @@ export async function generate(opts: GenerateOptions): Promise<string> {
 
   // ─── --to html: write the self-contained document, no print round-trip ──
   if (to === "html") {
-    const { screenCss } = await import("./print-css");
     const withScreenLayer = finalHtml.replace(
       "</style>",
       `</style>\n<style>\n${screenCss()}\n</style>`,
@@ -214,6 +214,19 @@ export async function generate(opts: GenerateOptions): Promise<string> {
 
   // ─── --to docx: content-fidelity conversion (eng-review P8) ────────────
   if (to === "docx") {
+    // Print-only surfaces don't survive the conversion. The watermark div
+    // would degrade to a literal body paragraph reading "DRAFT" (worse than
+    // absent) — strip it. Warn once about print-only flags that were set.
+    finalHtml = finalHtml.replace(/<div class="watermark">[\s\S]*?<\/div>/, "");
+    const printOnly: string[] = [];
+    if (opts.watermark) printOnly.push("--watermark");
+    if (opts.headerTemplate) printOnly.push("--header-template");
+    if (opts.footerTemplate) printOnly.push("--footer-template");
+    if (opts.pageSize) printOnly.push("--page-size");
+    if (opts.margins || opts.marginTop || opts.marginRight || opts.marginBottom || opts.marginLeft) printOnly.push("--margins");
+    if (printOnly.length > 0) {
+      warn(`docx is content-fidelity: ${printOnly.join(", ")} do not apply to Word output`);
+    }
     progress.begin("Converting to DOCX");
     const { default: HTMLtoDOCX } = await import("html-to-docx");
     const buf = await HTMLtoDOCX(finalHtml, null, {
@@ -311,6 +324,21 @@ export async function preview(opts: PreviewOptions): Promise<string> {
 
   progress.begin("Rendering HTML");
   const markdown = fs.readFileSync(input, "utf8");
+  // Preview deliberately skips the diagram/image pre-pass (no browse daemon
+  // round-trip — preview is the fast loop). Be loud about the divergence so
+  // nobody signs off on a preview that lacks what the PDF will have.
+  if (!opts.quiet) {
+    const fenceCount = extractDiagramFences(markdown).fences.length;
+    const hasLocalImages = /!\[[^\]]*\]\((?!https?:|data:)[^)]+\)/.test(markdown);
+    if (fenceCount > 0 || hasLocalImages) {
+      process.stderr.write(
+        `[make-pdf] preview note: ${fenceCount > 0 ? `${fenceCount} diagram fence(s) shown as code` : ""}` +
+        `${fenceCount > 0 && hasLocalImages ? "; " : ""}` +
+        `${hasLocalImages ? "local images may not resolve from the preview location" : ""}` +
+        ` — \`generate\` renders them fully.\n`,
+      );
+    }
+  }
   const rendered = render({
     markdown,
     title: opts.title,

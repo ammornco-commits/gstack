@@ -112,14 +112,19 @@ export function render(opts: RenderOptions): RenderResult {
       })
     : "";
 
+  // TOC anchors must resolve: assign id="toc-N" to each H1-H3 in the same
+  // order buildTocBlock scans them, or every TOC link is a dead href (masked
+  // in PDFs by Chromium outline bookmarks, glaring in --to html).
+  const anchoredHtml = opts.toc ? addHeadingIds(typographicHtml) : typographicHtml;
+
   const tocBlock = opts.toc
-    ? buildTocBlock(typographicHtml)
+    ? buildTocBlock(anchoredHtml)
     : "";
 
   // Wrap body in .chapter sections at H1 boundaries if chapter breaks are on.
   const chapterHtml = opts.noChapterBreaks
-    ? `<section class="chapter">${typographicHtml}</section>`
-    : wrapChaptersByH1(typographicHtml);
+    ? `<section class="chapter">${anchoredHtml}</section>`
+    : wrapChaptersByH1(anchoredHtml);
 
   const watermarkBlock = opts.watermark
     ? `<div class="watermark">${escapeHtml(opts.watermark)}</div>`
@@ -288,6 +293,21 @@ function buildTocBlock(html: string): string {
   ].join("\n");
 }
 
+/**
+ * Assign id="toc-N" to every H1-H3 in document order — the same order
+ * extractHeadings/buildTocBlock use, so anchors and entries line up by index.
+ * Headings that already carry an id keep it AND gain nothing (the TOC link
+ * targets toc-N, so we only skip tagging when one exists to avoid dupes).
+ */
+function addHeadingIds(html: string): string {
+  let i = 0;
+  return html.replace(/<(h[1-3])([^>]*)>/gi, (full, tag: string, attrs: string) => {
+    const id = `toc-${i++}`;
+    if (/\bid\s*=/i.test(attrs)) return full;
+    return `<${tag}${attrs} id="${id}">`;
+  });
+}
+
 function extractHeadings(html: string): Array<{ level: number; text: string }> {
   const re = /<(h[1-3])[^>]*>([\s\S]*?)<\/\1>/gi;
   const headings: Array<{ level: number; text: string }> = [];
@@ -362,7 +382,7 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]+>/g, "");
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

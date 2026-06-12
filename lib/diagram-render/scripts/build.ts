@@ -78,9 +78,17 @@ const html = head + inlineJs + tail;
 await Bun.write(DIST_HTML, html);
 
 const sha256 = createHash("sha256").update(html).digest("hex");
+// Source fingerprint: lets the drift test catch "edited src, forgot to
+// rebuild dist" WITHOUT needing node_modules for a full rebuild (the deep
+// rebuild check only runs where deps are installed).
+const srcSha256 = createHash("sha256")
+  .update(await Bun.file(ENTRY).text())
+  .update(await Bun.file(import.meta.path).text())
+  .digest("hex");
 const info = {
   name: "gstack-diagram-render",
   sha256,
+  srcSha256,
   bytes: Buffer.byteLength(html),
   bunVersion: Bun.version,
   deps,

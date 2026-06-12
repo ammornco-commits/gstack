@@ -34,6 +34,8 @@
  *     passes preferCSSPageSize — the orchestrator sets it when hasLandscape.
  */
 
+import { svgTagDims } from "./image-size";
+
 export interface ImagePolicyOptions {
   /** Physical content-box width in inches (page width minus margins). */
   contentWidthIn: number;
@@ -207,24 +209,8 @@ function decideDiagramPromotion(figure: string, widthThresholdPx: number): Promo
   return { promote: true, reason: `wide diagram (${Math.round(dims.width)}px)` };
 }
 
-/**
- * Best-effort CSS-px dimensions of the first <svg> in a figure: explicit
- * width/height attributes (px or unitless) first, else viewBox.
- */
-function svgCssDims(figure: string): { width: number; height: number } | null {
-  const tag = figure.match(/<svg\b[^>]*>/i)?.[0];
-  if (!tag) return null;
-  const attrNum = (name: string): number | null => {
-    const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']\\s*([0-9.]+)(px)?\\s*["']`, "i"));
-    return m ? parseFloat(m[1]) : null;
-  };
-  const w = attrNum("width");
-  const h = attrNum("height");
-  if (w && h) return { width: w, height: h };
-  const vb = tag.match(/\bviewBox\s*=\s*["']\s*[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)[\s,]+([0-9.]+)\s*["']/i);
-  if (vb) return { width: parseFloat(vb[1]), height: parseFloat(vb[2]) };
-  return null;
-}
+/** SVG dimension probing is shared with the byte prober — see image-size.ts. */
+const svgCssDims = svgTagDims;
 
 function attrValue(tag: string, name: string): string | null {
   const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i"))
@@ -241,7 +227,10 @@ function num(s: string | null): number | null {
 function mergeStyle(tag: string, css: string): string {
   const existing = attrValue(tag, "style");
   if (existing !== null) {
-    return tag.replace(/\bstyle\s*=\s*(".*?"|'.*?')/i, `style="${existing.replace(/"/g, "")}; ${css}"`);
+    // Function replacement (no $-pattern expansion from user-controlled style
+    // values) and the existing declarations are preserved verbatim — attrValue
+    // already returned the unquoted inner value.
+    return tag.replace(/\bstyle\s*=\s*(".*?"|'.*?')/i, () => `style="${existing}; ${css}"`);
   }
-  return tag.replace(/^<img\b/i, `<img style="${css}"`);
+  return tag.replace(/^<img\b/i, () => `<img style="${css}"`);
 }

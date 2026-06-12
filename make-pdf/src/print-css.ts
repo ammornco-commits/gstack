@@ -12,9 +12,11 @@
  *     breaks copy-paste extraction.
  *   - All paragraphs flush-left. No first-line indent, no justify, no
  *     p+p indent. text-align: left everywhere. 12pt margin-bottom.
- *   - Cover page has the same 1in margins as every other page. No flexbox
- *     center, no inset padding, no vertical centering. Distinction comes
- *     from eyebrow + larger title + hairline rule, not from centering.
+ *   - Cover page (v1.58.0.0 poster revision, user-directed): 56pt title,
+ *     13pt meta, padding-top 1.4in for poster placement. Still no flexbox
+ *     and no vertical centering; the inset is a deliberate top-third drop.
+ *     (Supersedes the original "no inset padding" lock from the first
+ *     /plan-design-review — the 32pt cover read as too small in print.)
  *   - `@page :first` suppresses running header/footer but does NOT override
  *     the 1in margin.
  *   - No <link>, no external CSS/fonts — everything inlined.
@@ -122,8 +124,9 @@ function pageRules(size: string, margin: string, opts: PrintCssOptions): string 
     // Landscape named page for promoted wide diagrams/images (image-policy).
     // Chromium-only — exactly the engine this pipeline always prints with.
     // Honored only when the print call passes preferCSSPageSize (orchestrator
-    // sets it when a promotion exists). The block is flex-centered: a diagram
-    // alone on a rotated page should sit in the middle, not hug the header.
+    // sets it when a promotion exists). Vertical centering is NOT done here —
+    // image-policy emits a computed inline margin-top instead (see the
+    // .page-wide comment below for why).
     `@page wide {`,
     `  size: ${size} landscape;`,
     `  margin: ${margin};`,
@@ -139,6 +142,9 @@ function pageRules(size: string, margin: string, opts: PrintCssOptions): string 
     `  page: wide;`,
     `  text-align: center;`,
     `}`,
+    // width: 100% stretch is intentional for promoted content: auto-promoted
+    // rasters are >=~1600px (≈190dpi at the 9in landscape box — prints fine),
+    // and a directive-forced small image is the user's explicit call.
     `.page-wide img, .page-wide svg { width: 100%; height: auto; max-width: none; }`,
     `.page-wide figure.diagram > svg { max-width: none; }`,
   ].filter(line => line !== "").join("\n");
@@ -153,10 +159,13 @@ function pageRules(size: string, margin: string, opts: PrintCssOptions): string 
 export function screenCss(): string {
   return [
     `@media screen {`,
-    `  body { max-width: 52em; margin: 0 auto; padding: 2.5em 1.5em; }`,
+    // ~42em at 12pt ≈ 70-75 characters per line — the readable ceiling.
+    `  body { max-width: 42em; margin: 0 auto; padding: 2.5em 1.5em; }`,
     `  .chapter { break-before: auto; }`,
     `  .watermark { display: none; }`,
     `  figure.diagram { overflow-x: auto; }`,
+    // Page numbers only exist in print; hide the empty spans + dot leaders.
+    `  .toc li .toc-page, .toc li .toc-dots { display: none; }`,
     `}`,
   ].join("\n");
 }
@@ -362,11 +371,11 @@ function quoteRules(): string {
     `  padding: 0 0 0 18pt;`,
     `  border-left: 2pt solid #111;`,
     `  color: #333;`,
-    `  font-size: 11pt;`,
+    `  font-size: 12pt;`,
     `  line-height: 1.5;`,
     `}`,
     `blockquote p { margin-bottom: 6pt; text-align: left; }`,
-    `blockquote cite { display: block; margin-top: 6pt; font-style: normal; font-size: 9.5pt; color: #666; letter-spacing: 0.02em; }`,
+    `blockquote cite { display: block; margin-top: 6pt; font-style: normal; font-size: 10pt; color: #666; letter-spacing: 0.02em; }`,
     `blockquote cite::before { content: "— "; }`,
   ].join("\n");
 }
@@ -410,7 +419,7 @@ function listRules(): string {
 function footnoteRules(): string {
   return [
     `.footnote-ref { font-size: 0.75em; vertical-align: super; line-height: 0; text-decoration: none; color: #0055cc; }`,
-    `.footnotes { margin-top: 24pt; padding-top: 12pt; border-top: 0.5pt solid #ccc; font-size: 9.5pt; line-height: 1.4; }`,
+    `.footnotes { margin-top: 24pt; padding-top: 12pt; border-top: 0.5pt solid #ccc; font-size: 10pt; line-height: 1.4; }`,
     `.footnotes ol { padding-left: 18pt; }`,
   ].join("\n");
 }

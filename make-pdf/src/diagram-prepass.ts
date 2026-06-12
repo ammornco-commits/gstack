@@ -28,9 +28,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import * as browseClient from "./browseClient";
-import { sanitizeUntrustedHtml } from "./render";
+import { escapeHtml, sanitizeUntrustedHtml } from "./render";
 import { imageDims } from "./image-size";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -92,10 +93,17 @@ export class StrictModeError extends Error {
 const DIAGRAM_LANGS = new Set(["mermaid", "excalidraw"]);
 
 /**
- * Extract top-level ```mermaid / ```excalidraw fences, replacing each with a
+ * Extract column-0 ```mermaid / ```excalidraw fences, replacing each with a
  * unique placeholder token paragraph. Backtick and tilde fences, any length
  * >= 3; closers must be at least as long as the opener (CommonMark). Fences
- * with `render=false` in the info string are left untouched.
+ * with `render=false` are left untouched.
+ *
+ * Two deliberate conservatisms (red-team finding — the original version
+ * reconstructed fences at column 0 and restructured lists):
+ *  - Non-diagram fences replay as their ORIGINAL raw lines, byte-for-byte
+ *    (only a render=false flag is removed, in place, preserving indent).
+ *  - INDENTED diagram fences (inside lists/quotes) are NOT extracted — a
+ *    column-0 placeholder would split the list. They replay verbatim as code.
  */
 export function extractDiagramFences(markdown: string): FenceExtraction {
   const lines = markdown.split("\n");
@@ -104,7 +112,10 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
   const runId = crypto.randomBytes(4).toString("hex");
 
   let i = 0;
-  let openFence: { char: string; len: number; info: string; body: string[] } | null = null;
+  let openFence: {
+    char: string; len: number; indent: number; info: string;
+    rawOpener: string; body: string[];
+  } | null = null;
   let ordinal = 0;
 
   while (i < lines.length) {
@@ -114,7 +125,7 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
       const close = matchFenceLine(line);
       if (close && close.char === openFence.char && close.len >= openFence.len && close.info === "") {
         const info = parseInfoString(openFence.info);
-        if (DIAGRAM_LANGS.has(info.lang) && info.render) {
+        if (DIAGRAM_LANGS.has(info.lang) && info.render && openFence.indent === 0) {
           ordinal++;
           const token = `gstack-diagram-slot-${runId}-${ordinal}`;
           fences.push({
@@ -128,10 +139,9 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
           });
           out.push("", token, "");
         } else {
-          // Not a diagram fence (or render=false): replay verbatim, but strip
-          // the render=false flag so it never leaks into highlighted output.
-          const infoOut = info.render ? openFence.info : info.lang;
-          out.push(`${openFence.char.repeat(openFence.len)}${infoOut}`);
+          // Not extracted (other language, render=false, or indented): replay
+          // the ORIGINAL lines verbatim; only strip a render=false flag.
+          out.push(stripRenderFalse(openFence.rawOpener));
           out.push(...openFence.body);
           out.push(line);
         }
@@ -146,7 +156,7 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
 
     const open = matchFenceLine(line);
     if (open && open.info !== "") {
-      openFence = { char: open.char, len: open.len, info: open.info, body: [] };
+      openFence = { ...open, rawOpener: line, body: [] };
       i++;
       continue;
     }
@@ -171,17 +181,22 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
 
   // Unclosed fence at EOF: replay verbatim (CommonMark treats it as code to EOF).
   if (openFence) {
-    out.push(`${openFence.char.repeat(openFence.len)}${openFence.info}`);
+    out.push(openFence.rawOpener);
     out.push(...openFence.body);
   }
 
   return { markdown: out.join("\n"), fences };
 }
 
-function matchFenceLine(line: string): { char: string; len: number; info: string } | null {
-  const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*(.*)$/);
+function matchFenceLine(line: string): { char: string; len: number; indent: number; info: string } | null {
+  const m = line.match(/^( {0,3})(`{3,}|~{3,})\s*(.*)$/);
   if (!m) return null;
-  return { char: m[1][0], len: m[1].length, info: m[2].trim() };
+  return { indent: m[1].length, char: m[2][0], len: m[2].length, info: m[3].trim() };
+}
+
+/** Remove a render=false flag from a raw opener line, preserving everything else. */
+function stripRenderFalse(rawOpener: string): string {
+  return rawOpener.replace(/\s*\brender\s*=\s*false\b/i, "");
 }
 
 /** Parse a fence info string: `mermaid`, `mermaid render=false`,
@@ -208,12 +223,12 @@ export function parseInfoString(info: string): {
 export function substituteSlots(html: string, slots: Map<string, string>): string {
   let s = html;
   for (const [token, slotHtml] of slots) {
+    // Function replacement is load-bearing: slot HTML carries user/LLM-authored
+    // diagram label text, and string-form replace() expands $&, $', $` patterns
+    // inside it — a label containing "$'" would duplicate the document tail.
     const wrapped = new RegExp(`<p>\\s*${token}\\s*</p>`, "g");
-    if (wrapped.test(s)) {
-      s = s.replace(new RegExp(`<p>\\s*${token}\\s*</p>`, "g"), slotHtml);
-    } else {
-      s = s.split(token).join(slotHtml);
-    }
+    const replaced = s.replace(wrapped, () => slotHtml);
+    s = replaced !== s ? replaced : s.split(token).join(slotHtml);
   }
   return s;
 }
@@ -227,14 +242,19 @@ export function buildDiagnosticBlock(fence: DiagramFence, errorMessage: string):
   const excerpt = fence.source.split("\n").slice(0, 8).join("\n");
   const truncated = fence.source.split("\n").length > 8 ? "\n…" : "";
   return [
-    `<figure class="diagram diagram-error" role="img" aria-label="${escapeAttr(diagramLabel(fence))} (failed to render)">`,
+    `<figure class="diagram diagram-error" role="img" aria-label="${escapeHtml(diagramLabel(fence))} (failed to render)">`,
     `<figcaption class="diagram-error-title">Diagram failed to render (${escapeHtml(fence.lang)})</figcaption>`,
     `<pre class="diagram-error-detail">${escapeHtml(errorMessage.trim())}\n\n${escapeHtml(excerpt + truncated)}</pre>`,
     `</figure>`,
   ].join("\n");
 }
 
-/** Wrap a rendered SVG in an accessible figure (D6.4). */
+/**
+ * Wrap a rendered SVG in an accessible figure (D6.4). The raw fence source is
+ * preserved base64-encoded in a data attribute — an HTML comment would need
+ * `--` escaping, which corrupts every mermaid arrow (`-->`) and breaks
+ * round-trip recovery.
+ */
 export function buildDiagramFigure(fence: DiagramFence, svg: string): string {
   const label = diagramLabel(fence);
   const cleanSvg = sanitizeUntrustedHtml(svg);
@@ -242,15 +262,25 @@ export function buildDiagramFigure(fence: DiagramFence, svg: string): string {
     ? `\n<figcaption class="diagram-caption">${escapeHtml(fence.title)}</figcaption>`
     : "";
   const pageAttr = fence.page ? ` data-gstack-page="${fence.page}"` : "";
+  const sourceB64 = Buffer.from(fence.source, "utf8").toString("base64");
   return [
-    `<figure class="diagram" role="img" aria-label="${escapeAttr(label)}"${pageAttr}>`,
-    `<!-- gstack-diagram-source lang=${escapeAttr(fence.lang)}`,
-    escapeHtmlComment(fence.source),
-    `-->`,
+    `<figure class="diagram" role="img" aria-label="${escapeHtml(label)}"${pageAttr}` +
+      ` data-gstack-lang="${escapeHtml(fence.lang)}" data-gstack-source="${sourceB64}">`,
     cleanSvg,
     captioned,
     `</figure>`,
   ].join("\n");
+}
+
+/** Recover the original fence source from a rendered figure (round-trip). */
+export function decodeFigureSource(figureHtml: string): string | null {
+  const m = figureHtml.match(/\bdata-gstack-source="([A-Za-z0-9+/=]*)"/);
+  if (!m) return null;
+  try {
+    return Buffer.from(m[1], "base64").toString("utf8");
+  } catch {
+    return null;
+  }
 }
 
 function diagramLabel(fence: DiagramFence): string {
@@ -261,6 +291,11 @@ function diagramLabel(fence: DiagramFence): string {
 
 const PAYLOAD_TMP_DIR = process.platform === "win32" ? os.tmpdir() : "/tmp";
 const READY_TIMEOUT_MS = 20_000;
+// Expressions bigger than this ship via `browse eval <file>` instead of argv.
+// 8KB is safe on every platform (Windows CreateProcess caps the WHOLE command
+// line at 32,767 chars; Linux MAX_ARG_STRLEN is ~128KiB) and the tmp-file
+// round-trip costs microseconds — one spawn regardless of payload size.
+const MAX_ARGV_EXPR_BYTES = 8_000;
 
 export class RenderTab {
   private constructor(
@@ -279,14 +314,37 @@ export class RenderTab {
     const html = fs.readFileSync(bundleSrc);
     const sha = crypto.createHash("sha256").update(html).digest("hex").slice(0, 16);
     const staged = path.join(PAYLOAD_TMP_DIR, `gstack-diagram-render-${sha}.html`);
-    if (!fs.existsSync(staged)) {
+    // Never trust an existing file at the predictable shared-/tmp name: verify
+    // its content hash and re-stage on mismatch (a pre-planted file would
+    // otherwise be loaded into the render tab as the bundle).
+    let needsWrite = true;
+    if (fs.existsSync(staged)) {
+      try {
+        const existing = crypto.createHash("sha256").update(fs.readFileSync(staged)).digest("hex").slice(0, 16);
+        needsWrite = existing !== sha;
+      } catch {
+        needsWrite = true;
+      }
+    }
+    if (needsWrite) {
       // Concurrent-safe: write to a unique temp name, then atomic rename.
       const tmp = `${staged}.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
       fs.writeFileSync(tmp, html);
       try {
         fs.renameSync(tmp, staged);
-      } catch {
-        fs.unlinkSync(tmp); // another process won the race — theirs is identical
+      } catch (renameErr) {
+        try { fs.unlinkSync(tmp); } catch { /* best-effort tmp cleanup */ }
+        // Only swallow the rename failure when the surviving file HASHES to
+        // the expected bundle (a concurrent writer won an OS-level race).
+        // Sticky-bit /tmp makes rename-over-foreign-file fail EPERM — if the
+        // survivor were trusted on existence alone, a pre-planted file would
+        // ride through the exact check added to stop it.
+        let survivorOk = false;
+        try {
+          const survivor = crypto.createHash("sha256").update(fs.readFileSync(staged)).digest("hex").slice(0, 16);
+          survivorOk = survivor === sha;
+        } catch { /* unreadable survivor = not ok */ }
+        if (!survivorOk) throw renameErr;
       }
     }
     const tabId = browseClient.newtab();
@@ -330,36 +388,29 @@ export class RenderTab {
 
   private js(expression: string): string {
     // Large payloads (scene JSON, SVG text, data URIs) blow past argv limits —
-    // browseClient.js shells out with the expression as an argv element, so
-    // stage anything big through a tmp file the page can fetch? No: file URLs
-    // are unreachable from the page. Instead, chunk through a window buffer.
-    if (expression.length <= 100_000) {
+    // browseClient.js shells out with the expression as an argv element. The
+    // limit is BYTES, not chars (CJK content is 3x its char count in UTF-8),
+    // and Windows caps the whole command line at 32,767 chars — so anything
+    // big ships via `browse eval <file>` instead: one spawn, any size.
+    if (Buffer.byteLength(expression, "utf8") <= MAX_ARGV_EXPR_BYTES) {
       return browseClient.js({ expression, tabId: this.tabId });
     }
-    return this.jsViaBuffer(expression);
+    return this.jsViaFile(expression);
   }
 
-  /**
-   * argv-safe path for big expressions: ship the expression into the page in
-   * 64KB chunks (window.__exprBuf), then eval it there. Used for multi-MB
-   * data URIs (photo downscaling) where a single argv would exceed OS limits.
-   */
-  private jsViaBuffer(expression: string): string {
-    browseClient.js({ expression: "window.__exprBuf = ''", tabId: this.tabId });
-    const CHUNK = 64_000;
-    for (let i = 0; i < expression.length; i += CHUNK) {
-      const chunk = expression.slice(i, i + CHUNK);
-      browseClient.js({
-        expression: `window.__exprBuf += ${JSON.stringify(chunk)}, window.__exprBuf.length`,
-        tabId: this.tabId,
-      });
+  /** argv-safe path for big expressions: stage to a tmp file under browse's
+   *  safe dirs and run `browse eval <file>` (one spawn regardless of size). */
+  private jsViaFile(expression: string): string {
+    const file = path.join(
+      PAYLOAD_TMP_DIR,
+      `gstack-diagram-expr-${process.pid}-${crypto.randomBytes(4).toString("hex")}.js`,
+    );
+    fs.writeFileSync(file, expression, "utf8");
+    try {
+      return browseClient.evalFile({ file, tabId: this.tabId });
+    } finally {
+      try { fs.unlinkSync(file); } catch { /* best-effort tmp cleanup */ }
     }
-    // Eval the buffer as a single expression so the resulting promise is the
-    // statement value browse awaits. The buffer resets at the next call.
-    return browseClient.js({
-      expression: `(0, eval)(window.__exprBuf)`,
-      tabId: this.tabId,
-    });
   }
 
   close(): void {
@@ -466,21 +517,31 @@ export function rasterizeDiagramFigures(
         const png = tab.call("__rasterize", svgMatch[0], targetPx);
         return `<p><img src="${png}" alt="${label}"></p>`;
       } catch (err: any) {
-        warn(`docx: diagram rasterization failed (${firstLine(err?.message ?? String(err))}); keeping source text`);
-        return figure;
+        const reason = firstLine(err?.message ?? String(err));
+        warn(`docx: diagram rasterization failed (${reason}); embedding source text instead`);
+        // The converter drops <figure>/<svg> entirely, so returning the figure
+        // would make the diagram vanish without a trace — the exact invisible
+        // failure the diagnostic contract forbids. Surface the source.
+        const source = decodeFigureSource(figure) ?? "(source unavailable)";
+        return [
+          `<p><strong>Diagram could not be rasterized for DOCX (${escapeHtml(reason)}) — source:</strong></p>`,
+          `<pre>${escapeHtml(source)}</pre>`,
+        ].join("\n");
       }
     },
   );
 
   // 2. SVG data-URI images (inlined .svg files) → PNG.
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    const src = tag.match(SRC_RE)?.[2] ?? tag.match(SRC_RE)?.[3] ?? "";
+    const m = tag.match(SRC_RE);
+    const src = m?.[2] ?? m?.[3] ?? "";
     if (!src.startsWith("data:image/svg+xml")) return tag;
     try {
       const b64 = src.slice(src.indexOf(",") + 1);
       const svgText = Buffer.from(b64, "base64").toString("utf8");
       const png = tab.call("__rasterize", svgText, targetPx);
-      return tag.replace(SRC_RE, `src="${png}"`);
+      // Function replacement: data URIs can contain $-patterns.
+      return tag.replace(SRC_RE, () => `src="${png}"`);
     } catch (err: any) {
       warn(`docx: svg image rasterization failed (${firstLine(err?.message ?? String(err))})`);
       return tag;
@@ -521,6 +582,9 @@ const SRC_RE = /\bsrc\s*=\s*("([^"]*)"|'([^']*)')/i;
 export function inlineLocalImages(html: string, opts: PrepassImageOptions): string {
   const maxPx = Math.round(opts.contentWidthIn * PRINT_DPI * DOWNSCALE_FACTOR);
   const targetPx = Math.round(opts.contentWidthIn * PRINT_DPI);
+  // An image referenced N times is read/probed/downscaled once; the same data
+  // URI string is reused (also dedupes memory until the final join).
+  const memo = new Map<string, string>();
 
   return html.replace(IMG_TAG_RE, (tag) => {
     const srcMatch = tag.match(SRC_RE);
@@ -529,7 +593,11 @@ export function inlineLocalImages(html: string, opts: PrepassImageOptions): stri
 
     if (src.startsWith("data:")) return annotateFromDataUri(tag, src);
 
-    if (/^[a-z][a-z0-9+.-]*:/i.test(src)) {
+    // Windows drive-letter paths (C:/x.png, C:\x.png) look like single-letter
+    // URL schemes — they are local paths, not URLs.
+    const isDrivePath = /^[a-zA-Z]:[\\/]/.test(src);
+
+    if (!isDrivePath && /^[a-z][a-z0-9+.-]*:/i.test(src)) {
       // Absolute URL with a scheme (http, https, file, …)
       if (opts.allowNetwork && /^https?:/i.test(src)) return tag;
       if (/^https?:/i.test(src)) {
@@ -543,8 +611,13 @@ export function inlineLocalImages(html: string, opts: PrepassImageOptions): stri
     }
 
     const filePath = src.startsWith("file:")
-      ? decodeURIComponent(new URL(src).pathname)
-      : path.resolve(opts.inputDir, decodeURIComponent(src));
+      ? fileURLToPath(src)
+      : isDrivePath
+        ? path.resolve(src)
+        : path.resolve(opts.inputDir, decodeURIComponent(src));
+
+    const cached = memo.get(filePath);
+    if (cached !== undefined) return rewriteImgTag(tag, cached);
 
     if (!fs.existsSync(filePath)) {
       const msg = `image not found: ${src} (resolved to ${filePath})`;
@@ -579,15 +652,24 @@ export function inlineLocalImages(html: string, opts: PrepassImageOptions): stri
     }
 
     const dataUri = `data:${mime};base64,${buf.toString("base64")}`;
-    let newTag = tag.replace(SRC_RE, `src="${dataUri}"`);
-    if (dims) {
-      newTag = newTag.replace(
-        /^<img\b/i,
-        `<img data-gstack-px-width="${Math.round(dims.width)}" data-gstack-px-height="${Math.round(dims.height)}"`,
-      );
-    }
-    return newTag;
+    const attrs = dims
+      ? ` data-gstack-px-width="${Math.round(dims.width)}" data-gstack-px-height="${Math.round(dims.height)}"`
+      : "";
+    memo.set(filePath, `${dataUri} ${attrs}`);
+    return rewriteImgTag(tag, memo.get(filePath)!);
   });
+}
+
+/** Apply a memoized `dataUri attrs` payload to an img tag. */
+function rewriteImgTag(tag: string, memoEntry: string): string {
+  const sep = memoEntry.indexOf(" ");
+  const dataUri = memoEntry.slice(0, sep);
+  const attrs = memoEntry.slice(sep + 1);
+  // Function replacement: data URIs are user-content-derived; string-form
+  // replace() would expand $-patterns inside them.
+  let out = tag.replace(SRC_RE, () => `src="${dataUri}"`);
+  if (attrs) out = out.replace(/^<img\b/i, () => `<img${attrs}`);
+  return out;
 }
 
 function annotateFromDataUri(tag: string, src: string): string {
@@ -695,24 +777,7 @@ export function landscapeContentBox(opts: {
 }
 
 // ─── tiny helpers ─────────────────────────────────────────────────────
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function escapeAttr(s: string): string {
-  return escapeHtml(s);
-}
-
-/** Comments may not contain `--`; encode it so the raw source survives. */
-function escapeHtmlComment(s: string): string {
-  return s.replace(/--/g, "-‐");
-}
+// escapeHtml is imported from ./render — single definition, no drift.
 
 function firstLine(s: string): string {
   return s.split("\n")[0].slice(0, 200);
