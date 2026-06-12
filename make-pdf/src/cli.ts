@@ -64,9 +64,14 @@ function printUsage(): void {
     lines.push(`      ${info.description}`);
   }
   lines.push("");
+  lines.push("Output format:");
+  lines.push("  --to pdf|html|docx        What to produce (default: pdf).");
+  lines.push("                            html = single self-contained file, no network refs.");
+  lines.push("                            docx = content fidelity, diagrams as PNG.");
+  lines.push("");
   lines.push("Page layout:");
   lines.push("  --margins <dim>           All four margins (default: 1in). in, pt, cm, mm.");
-  lines.push("  --page-size letter|a4|legal  (aliases: --format)");
+  lines.push("  --page-size letter|a4|legal  (aliases: --format — page SIZE, not output format)");
   lines.push("");
   lines.push("Document structure:");
   lines.push("  --cover                   Add a cover page.");
@@ -118,9 +123,16 @@ function generateOptionsFromFlags(parsed: ParsedArgs): GenerateOptions {
     if (f[`no-${key}`] === true) return false;
     return def;
   };
+  const to = typeof f.to === "string" ? f.to.toLowerCase() : "pdf";
+  if (to !== "pdf" && to !== "html" && to !== "docx") {
+    console.error(`$P generate: invalid --to '${f.to}'. Expected pdf, html, or docx.`);
+    console.error("(--format is a --page-size alias, not the output format.)");
+    process.exit(ExitCode.BadArgs);
+  }
   return {
     input: p[0],
     output: p[1],
+    to: to as GenerateOptions["to"],
     margins: f.margins as string | undefined,
     marginTop: f["margin-top"] as string | undefined,
     marginRight: f["margin-right"] as string | undefined,

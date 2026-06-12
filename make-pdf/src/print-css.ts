@@ -137,6 +137,23 @@ function pageRules(size: string, margin: string, opts: PrintCssOptions): string 
   ].filter(line => line !== "").join("\n");
 }
 
+/**
+ * Screen layer appended for `--to html` exports. The print CSS stays the
+ * source of truth; this only makes the same document readable in a browser
+ * (centered measure, padding, no print-only chapter breaks forcing scroll
+ * gaps). Print output is unaffected — media-scoped.
+ */
+export function screenCss(): string {
+  return [
+    `@media screen {`,
+    `  body { max-width: 52em; margin: 0 auto; padding: 2.5em 1.5em; }`,
+    `  .chapter { break-before: auto; }`,
+    `  .watermark { display: none; }`,
+    `  figure.diagram { overflow-x: auto; }`,
+    `}`,
+  ].join("\n");
+}
+
 function rootTypography(): string {
   return [
     `html { lang: en; }`,

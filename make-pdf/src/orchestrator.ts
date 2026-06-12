@@ -27,8 +27,10 @@ import * as browseClient from "./browseClient";
 import {
   RenderTab,
   contentWidthInches,
+  convertDiagnosticsForDocx,
   extractDiagramFences,
   inlineLocalImages,
+  rasterizeDiagramFigures,
   renderFenceSlots,
   substituteSlots,
 } from "./diagram-prepass";
@@ -80,8 +82,9 @@ export async function generate(opts: GenerateOptions): Promise<string> {
     throw new Error(`input file not found: ${input}`);
   }
 
+  const to = opts.to ?? "pdf";
   const outputPath = path.resolve(
-    opts.output ?? path.join(os.tmpdir(), `${deriveSlug(input)}.pdf`),
+    opts.output ?? path.join(os.tmpdir(), `${deriveSlug(input)}.${to}`),
   );
 
   // Stage 1: read markdown
@@ -170,8 +173,54 @@ export async function generate(opts: GenerateOptions): Promise<string> {
     const policy = applyImagePolicy(finalHtml, { contentWidthIn, warn });
     finalHtml = policy.html;
     hasLandscape = policy.hasLandscape;
+
+    // DOCX needs rasters, not inline SVG (Word's SVG support is unreliable) —
+    // do it while the render tab is still open.
+    if (to === "docx") {
+      const needsRaster = /<figure class="diagram"|data:image\/svg\+xml/.test(finalHtml);
+      if (needsRaster) {
+        progress.begin("Rasterizing diagrams for DOCX");
+        const tab = getRenderTab();
+        if (tab) {
+          finalHtml = rasterizeDiagramFigures(finalHtml, tab, contentWidthIn, warn);
+        } else {
+          warn("docx: no render tab — diagrams keep their source text form");
+        }
+        progress.end("Rasterizing diagrams for DOCX");
+      }
+      finalHtml = convertDiagnosticsForDocx(finalHtml);
+    }
   } finally {
     renderTab?.close();
+  }
+
+  // ─── --to html: write the self-contained document, no print round-trip ──
+  if (to === "html") {
+    const { screenCss } = await import("./print-css");
+    const withScreenLayer = finalHtml.replace(
+      "</style>",
+      `</style>\n<style>\n${screenCss()}\n</style>`,
+    );
+    fs.writeFileSync(outputPath, withScreenLayer, "utf8");
+    const kb = Math.round(fs.statSync(outputPath).size / 1024);
+    progress.done(`${rendered.meta.wordCount} words · ${kb}KB · ${outputPath}`);
+    return outputPath;
+  }
+
+  // ─── --to docx: content-fidelity conversion (eng-review P8) ────────────
+  if (to === "docx") {
+    progress.begin("Converting to DOCX");
+    const { default: HTMLtoDOCX } = await import("html-to-docx");
+    const buf = await HTMLtoDOCX(finalHtml, null, {
+      title: rendered.meta.title,
+      creator: rendered.meta.author || undefined,
+    });
+    const bytes: Uint8Array = buf instanceof Uint8Array ? buf : new Uint8Array(await (buf as Blob).arrayBuffer());
+    fs.writeFileSync(outputPath, bytes);
+    progress.end("Converting to DOCX");
+    const kb = Math.round(fs.statSync(outputPath).size / 1024);
+    progress.done(`${rendered.meta.wordCount} words · ${kb}KB · ${outputPath} (content fidelity — layout is Word's)`);
+    return outputPath;
   }
 
   // Stage 3: write HTML to a tmp file browse can read

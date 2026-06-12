@@ -439,6 +439,73 @@ export function renderFenceSlots(
   return slots;
 }
 
+// ─── DOCX rasterization (eng-review D6.5, P8) ─────────────────────────
+
+/**
+ * Replace inline diagram SVGs (and svg data-URI images) with PNG <img> tags
+ * for the DOCX export — Word's SVG support is unreliable, so the content-
+ * fidelity contract embeds rasters at 300dpi of the placed width (the
+ * content box). Diagnostic blocks keep their text form.
+ */
+export function rasterizeDiagramFigures(
+  html: string,
+  tab: RenderTab,
+  contentWidthIn: number,
+  warn: (msg: string) => void,
+): string {
+  const targetPx = Math.round(contentWidthIn * PRINT_DPI);
+
+  // 1. Rendered diagram figures → <img> with the figure's aria-label as alt.
+  let out = html.replace(
+    /<figure class="diagram"[^>]*>[\s\S]*?<\/figure>/gi,
+    (figure) => {
+      const svgMatch = figure.match(/<svg\b[\s\S]*<\/svg>/i);
+      if (!svgMatch) return figure;
+      const label = figure.match(/\baria-label\s*=\s*"([^"]*)"/i)?.[1] ?? "diagram";
+      try {
+        const png = tab.call("__rasterize", svgMatch[0], targetPx);
+        return `<p><img src="${png}" alt="${label}"></p>`;
+      } catch (err: any) {
+        warn(`docx: diagram rasterization failed (${firstLine(err?.message ?? String(err))}); keeping source text`);
+        return figure;
+      }
+    },
+  );
+
+  // 2. SVG data-URI images (inlined .svg files) → PNG.
+  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = tag.match(SRC_RE)?.[2] ?? tag.match(SRC_RE)?.[3] ?? "";
+    if (!src.startsWith("data:image/svg+xml")) return tag;
+    try {
+      const b64 = src.slice(src.indexOf(",") + 1);
+      const svgText = Buffer.from(b64, "base64").toString("utf8");
+      const png = tab.call("__rasterize", svgText, targetPx);
+      return tag.replace(SRC_RE, `src="${png}"`);
+    } catch (err: any) {
+      warn(`docx: svg image rasterization failed (${firstLine(err?.message ?? String(err))})`);
+      return tag;
+    }
+  });
+
+  return out;
+}
+
+/**
+ * Diagnostic figures → plain <p>/<pre> for the DOCX converter, which drops
+ * <figure> elements it can't map. An invisible error is the one thing the
+ * diagnostic contract forbids. Pure — no render tab needed.
+ */
+export function convertDiagnosticsForDocx(html: string): string {
+  return html.replace(
+    /<figure class="diagram diagram-error"[^>]*>([\s\S]*?)<\/figure>/gi,
+    (_full, body: string) => {
+      const title = body.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i)?.[1] ?? "Diagram failed to render";
+      const detail = body.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)?.[1] ?? "";
+      return `<p><strong>${title}</strong></p>\n<pre>${detail}</pre>`;
+    },
+  );
+}
+
 // ─── Image inlining (eng-review D1 + D4 + D6.1) ───────────────────────
 
 const IMG_TAG_RE = /<img\b[^>]*>/gi;
