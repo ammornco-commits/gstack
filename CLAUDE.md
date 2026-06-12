@@ -828,6 +828,27 @@ them. Report progress at each check (which tests passed, which are running, any
 failures so far). The user wants to see the run complete, not a promise that
 you'll check later.
 
+## Running evals as an agent: always detach (SIGTERM-proof)
+
+When **you (an agent/harness)** launch a long eval/benchmark run, run it through
+`bin/gstack-detach` — NEVER as a plain backgrounded Bash task. A plain background
+task lives in the harness's process group, so a SIGTERM ("polite quit") on a turn
+boundary, a stopped Monitor, or an interruption kills the run mid-flight (observed:
+`script "test:gate" was terminated by signal SIGTERM` ~40 min into a run). On macOS
+the run can also die to idle-sleep. `gstack-detach` fixes both: a fresh session
+(escapes the group SIGTERM) wrapped in `caffeinate -i` (blocks idle-sleep).
+
+- Use the `eval:bg*` scripts (`eval:bg`, `eval:bg:all`, `eval:bg:gate`,
+  `eval:bg:periodic`) — they wrap the eval command in `gstack-detach` and stream to
+  `/tmp/gstack-evals.log`. Or call `gstack-detach <log> -- <cmd>` directly for any
+  long agent job. Export `ANTHROPIC_API_KEY` first (never pass keys in argv).
+- Then **poll the logfile** with a death-aware watcher: break on a `### DONE ###` /
+  `EXIT=` marker OR on "runner process gone before DONE" (silence is not success —
+  cover the crash/kill path, not just the happy path). The detached run survives
+  even if your watcher gets reaped, so re-checking the log always works.
+- Humans running `bun run test:evals` foreground in their own terminal don't need
+  this — Ctrl-C is intended there. Detachment is for agent-launched runs only.
+
 ## E2E test fixtures: extract, don't copy
 
 **NEVER copy a full SKILL.md file into an E2E test fixture.** SKILL.md files are
