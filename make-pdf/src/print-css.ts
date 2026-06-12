@@ -118,6 +118,22 @@ function pageRules(size: string, margin: string, opts: PrintCssOptions): string 
     `  @bottom-center { content: none; }`,
     `  @bottom-right { content: none; }`,
     `}`,
+    ``,
+    // Landscape named page for promoted wide diagrams/images (image-policy).
+    // Chromium-only — exactly the engine this pipeline always prints with.
+    // Honored only when the print call passes preferCSSPageSize (orchestrator
+    // sets it when a promotion exists).
+    `@page wide {`,
+    `  size: ${size} landscape;`,
+    `  margin: ${margin};`,
+    `}`,
+    `.page-wide {`,
+    `  page: wide;`,
+    `  break-before: page;`,
+    `  break-after: page;`,
+    `}`,
+    `.page-wide img, .page-wide svg { width: 100%; height: auto; max-width: none; }`,
+    `.page-wide figure.diagram > svg { max-width: none; }`,
   ].filter(line => line !== "").join("\n");
 }
 

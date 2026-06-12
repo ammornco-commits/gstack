@@ -14,6 +14,7 @@
 import { marked } from "marked";
 import { smartypants } from "./smartypants";
 import { printCss, type PrintCssOptions } from "./print-css";
+import { applyImageDirectives } from "./image-policy";
 
 export interface RenderOptions {
   markdown: string;
@@ -60,8 +61,13 @@ export function render(opts: RenderOptions): RenderResult {
   // 1. Markdown → HTML
   const rawHtml = marked.parse(opts.markdown, { async: false }) as string;
 
+  // 1.5. Image directive suffixes: `![a](x.png){width=50%}` → data-gstack-*
+  // attributes. Before the sanitizer (which keeps data- attrs) so the brace
+  // text never reaches smartypants or the final page.
+  const directedHtml = applyImageDirectives(rawHtml);
+
   // 2. Sanitize
-  const cleanHtml = sanitizeUntrustedHtml(rawHtml);
+  const cleanHtml = sanitizeUntrustedHtml(directedHtml);
 
   // 3. Decode common entities so smartypants can match raw " and '.
   //    marked HTML-encodes quotes in text ("hello" → &quot;hello&quot;);

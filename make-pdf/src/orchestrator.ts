@@ -32,6 +32,7 @@ import {
   renderFenceSlots,
   substituteSlots,
 } from "./diagram-prepass";
+import { applyImagePolicy } from "./image-policy";
 
 class ProgressReporter {
   private readonly quiet: boolean;
@@ -119,6 +120,7 @@ export async function generate(opts: GenerateOptions): Promise<string> {
     if (!opts.quiet) process.stderr.write(`\r\x1b[K[make-pdf] warning: ${msg}\n`);
   };
   let renderTab: RenderTab | null = null;
+  let hasLandscape = false;
   const getRenderTab = (): RenderTab | null => {
     if (renderTab) return renderTab;
     try {
@@ -153,15 +155,21 @@ export async function generate(opts: GenerateOptions): Promise<string> {
     }
 
     progress.begin("Inlining images");
+    const contentWidthIn = contentWidthInches(opts);
     finalHtml = inlineLocalImages(finalHtml, {
       inputDir: path.dirname(input),
       strict: opts.strict === true,
       allowNetwork: opts.allowNetwork === true,
-      contentWidthIn: contentWidthInches(opts),
+      contentWidthIn,
       warn,
       getTab: getRenderTab,
     });
     progress.end("Inlining images");
+
+    // Width directives + conservative auto-landscape (image-policy).
+    const policy = applyImagePolicy(finalHtml, { contentWidthIn, warn });
+    finalHtml = policy.html;
+    hasLandscape = policy.hasLandscape;
   } finally {
     renderTab?.close();
   }
@@ -212,6 +220,10 @@ export async function generate(opts: GenerateOptions): Promise<string> {
       tagged: opts.tagged !== false,
       outline: opts.outline !== false,
       printBackground: !!opts.watermark,
+      // Named landscape pages only take effect when Chromium honors CSS page
+      // sizes. Flip it ONLY when a promotion exists — minimal behavior change
+      // for every other document.
+      preferCSSPageSize: hasLandscape ? true : undefined,
       toc: opts.toc,
     });
     progress.end("Generating PDF");

@@ -42,6 +42,8 @@ export interface DiagramFence {
   source: string;
   /** Optional title="..." from the fence info string (a11y label, D6.4). */
   title?: string;
+  /** Optional page=landscape|portrait fence directive (image-policy override). */
+  page?: "landscape" | "portrait";
   /** render=false → leave as a plain code block (escape hatch, D6.3). */
   render: boolean;
   /** Placeholder token substituted into the markdown. */
@@ -119,6 +121,7 @@ export function extractDiagramFences(markdown: string): FenceExtraction {
             lang: info.lang,
             source: openFence.body.join("\n"),
             title: info.title,
+            page: info.page,
             render: true,
             token,
             ordinal,
@@ -181,13 +184,18 @@ function matchFenceLine(line: string): { char: string; len: number; info: string
   return { char: m[1][0], len: m[1].length, info: m[2].trim() };
 }
 
-/** Parse a fence info string: `mermaid`, `mermaid render=false`, `mermaid title="Auth flow"`. */
-export function parseInfoString(info: string): { lang: string; render: boolean; title?: string } {
+/** Parse a fence info string: `mermaid`, `mermaid render=false`,
+ *  `mermaid title="Auth flow"`, `mermaid page=landscape`. */
+export function parseInfoString(info: string): {
+  lang: string; render: boolean; title?: string; page?: "landscape" | "portrait";
+} {
   const lang = (info.match(/^\S+/)?.[0] ?? "").toLowerCase();
   const render = !/\brender\s*=\s*false\b/i.test(info);
   const title = info.match(/\btitle\s*=\s*"([^"]*)"/i)?.[1]
     ?? info.match(/\btitle\s*=\s*'([^']*)'/i)?.[1];
-  return { lang, render, title };
+  const pageRaw = info.match(/\bpage\s*=\s*(landscape|portrait)\b/i)?.[1]?.toLowerCase();
+  const page = pageRaw === "landscape" || pageRaw === "portrait" ? pageRaw : undefined;
+  return { lang, render, title, page };
 }
 
 // ─── Slot substitution (pure) ─────────────────────────────────────────
@@ -233,8 +241,9 @@ export function buildDiagramFigure(fence: DiagramFence, svg: string): string {
   const captioned = fence.title
     ? `\n<figcaption class="diagram-caption">${escapeHtml(fence.title)}</figcaption>`
     : "";
+  const pageAttr = fence.page ? ` data-gstack-page="${fence.page}"` : "";
   return [
-    `<figure class="diagram" role="img" aria-label="${escapeAttr(label)}">`,
+    `<figure class="diagram" role="img" aria-label="${escapeAttr(label)}"${pageAttr}>`,
     `<!-- gstack-diagram-source lang=${escapeAttr(fence.lang)}`,
     escapeHtmlComment(fence.source),
     `-->`,
