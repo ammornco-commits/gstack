@@ -31,11 +31,26 @@ use Codex's own auth from `~/.codex/` config — no `OPENAI_API_KEY` env var nee
 `lib/conductor-env-shim.ts`) promotes `GSTACK_ANTHROPIC_API_KEY` /
 `GSTACK_OPENAI_API_KEY` to their canonical names inside gstack's TS binaries.
 Tests run through gstack entrypoints inherit this promotion automatically.
-Don't echo the key value to stdout, logs, or shell history. When passing to a
-test's Agent SDK, do NOT pass `env: {...}` to `runAgentSdkTest` — the SDK's
-auth pipeline doesn't pick up the key the same way when env is supplied as an
-object (confirmed failure mode). Mutate `process.env.ANTHROPIC_API_KEY`
-ambiently before the call and restore in `finally`.
+Don't echo the key value to stdout, logs, or shell history. The historical
+"never pass `env:` to `runAgentSdkTest`" rule is retired: the failure was
+partial-env replacement (the SDK's `Options.env` REPLACES the child's entire
+environment, so an object without the key broke auth). The runner now always
+passes a COMPLETE hermetic env with per-test `env:` merged last, so per-test
+overrides are safe; ambient `process.env.ANTHROPIC_API_KEY` mutation also
+still works (the env builder reads process.env at call time).
+
+**Hermetic local E2E (default).** Every E2E runner (claude -p, PTY, Agent
+SDK, codex, gemini) spawns children through `test/helpers/hermetic-env.ts`:
+allowlist-scrubbed env (operator `CONDUCTOR_*`, `CLAUDE_*`, `GSTACK_*`,
+`MCP_*`, `GBRAIN_*`, and credentials like `GH_TOKEN` never reach children),
+a fresh seeded `CLAUDE_CONFIG_DIR` (no operator `~/.claude` CLAUDE.md /
+MCP servers / skills), a temp `GSTACK_HOME`, and `--strict-mcp-config`.
+Local eval signal matches CI. Debug against real operator state with
+`EVALS_HERMETIC=0` (restores the legacy env AND drops the strict-MCP flag).
+Per-test `env:` overrides merge last, so deliberate contamination
+(`CONDUCTOR_WORKSPACE_PATH`, per-test `GSTACK_HOME`) keeps working. Wiring
+is pinned by `test/hermetic-wiring.test.ts` (static tripwire) and two
+gate-tier canaries in `test/skill-e2e-hermetic-canary.test.ts`.
 
 E2E tests stream progress in real-time (tool-by-tool via `--output-format stream-json
 --verbose`). Results are persisted to `~/.gstack-dev/evals/` with auto-comparison
