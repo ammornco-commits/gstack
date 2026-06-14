@@ -23,6 +23,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   isPermissionDialogVisible,
   isNumberedOptionListVisible,
@@ -549,6 +550,45 @@ describe('runPlanSkillObservation env passthrough surface', () => {
       env: { QUESTION_TUNING: 'false', EXPLAIN_LEVEL: 'default' },
     };
     expect(opts.env).toEqual({ QUESTION_TUNING: 'false', EXPLAIN_LEVEL: 'default' });
+  });
+});
+
+describe('launchClaudePty model pin (static tripwire)', () => {
+  // Why static-grep, not a behavioral assert: the spawn fires immediately
+  // inside launchClaudePty, so asserting the built args array would require
+  // extracting an arg-builder seam — which rewrites the exact region kyoto-v5's
+  // hermetic --strict-mcp-config insertion edits, reintroducing a merge
+  // conflict the placement deliberately avoids. The end-to-end behavioral proof
+  // is the live PTY smoke (skill-e2e-plan-*-plan-mode.test.ts) running under the
+  // pinned model. These grep-level guards stop a refactor from silently
+  // dropping the pin or reordering it past extraArgs.
+  const src = readFileSync(new URL('./claude-pty-runner.ts', import.meta.url), 'utf-8');
+
+  test('ClaudePtyOptions exposes model?: string', () => {
+    const opts: ClaudePtyOptions = { model: 'claude-sonnet-4-6' };
+    expect(opts.model).toBe('claude-sonnet-4-6');
+  });
+
+  test('spawn args push --model from the EVALS_MODEL fallback chain', () => {
+    expect(src).toContain("args.push('--model', model)");
+    // opts.model -> EVALS_MODEL -> 'claude-sonnet-4-6' (mirrors session-runner.ts:144)
+    expect(src).toMatch(
+      /opts\.model\s*\?\?\s*process\.env\.EVALS_MODEL\s*\?\?\s*'claude-sonnet-4-6'/,
+    );
+  });
+
+  test('--model is pushed BEFORE extraArgs so a per-test --model override wins', () => {
+    const modelPush = src.indexOf("args.push('--model', model)");
+    const extraArgsPush = src.indexOf('if (opts.extraArgs) args.push(...opts.extraArgs)');
+    expect(modelPush).toBeGreaterThan(-1);
+    expect(extraArgsPush).toBeGreaterThan(-1);
+    expect(modelPush).toBeLessThan(extraArgsPush);
+  });
+
+  test('all three plan-skill wrappers forward model to launchClaudePty', () => {
+    // Count must match the number of wrappers (observation, counting, floor).
+    const forwards = src.match(/^\s*model: opts\.model,$/gm) ?? [];
+    expect(forwards.length).toBe(3);
   });
 });
 

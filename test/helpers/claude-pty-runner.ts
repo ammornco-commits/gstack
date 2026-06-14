@@ -70,6 +70,15 @@ export interface ClaudePtyOptions {
   permissionMode?: 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto' | 'dontAsk' | null;
   /** Extra args after the permission-mode flag. */
   extraArgs?: string[];
+  /**
+   * Model for the spawned interactive `claude`. Without an explicit --model the
+   * child inherits the operator's ~/.claude/settings.json model (e.g.
+   * claude-fable-5[1m]), which can spend 5+ min in extended thinking on an empty
+   * plan-mode context and blow every smoke budget. Resolution mirrors
+   * session-runner.ts:144 exactly: opts.model ?? EVALS_MODEL ?? 'claude-sonnet-4-6'.
+   * Pushed BEFORE extraArgs so a test-supplied --model still wins (last flag wins).
+   */
+  model?: string;
   /** Terminal size. Default 120x40. Plan-mode UI lays out cleanly at this size. */
   cols?: number;
   rows?: number;
@@ -1137,9 +1146,15 @@ export async function launchClaudePty(
   let exited = false;
   let exitCodeCaptured: number | null = null;
 
+  const args: string[] = [];
+  // Pin the model so smokes don't inherit the operator's settings.json model
+  // (see ClaudePtyOptions.model). Chain mirrors session-runner.ts:144 so PTY and
+  // `claude -p` evals always agree. Pushed before extraArgs => a test-supplied
+  // --model wins (last flag wins).
+  const model = opts.model ?? process.env.EVALS_MODEL ?? 'claude-sonnet-4-6';
+  args.push('--model', model);
   // Permission mode: 'plan' default, null => omit flag entirely.
   const permissionMode = opts.permissionMode === undefined ? 'plan' : opts.permissionMode;
-  const args: string[] = [];
   if (permissionMode !== null) {
     args.push('--permission-mode', permissionMode);
   }
@@ -1480,6 +1495,9 @@ export async function runPlanSkillObservation(opts: {
    * Step 0 reads the prior conversation context so it sees the draft.
    */
   initialPlanContent?: string;
+  /** Override the spawned model. Defaults via launchClaudePty's chain
+   *  (opts.model ?? EVALS_MODEL ?? 'claude-sonnet-4-6'). */
+  model?: string;
 }): Promise<PlanSkillObservation> {
   const startedAt = Date.now();
   const session = await launchClaudePty({
@@ -1488,6 +1506,7 @@ export async function runPlanSkillObservation(opts: {
     timeoutMs: (opts.timeoutMs ?? 180_000) + 30_000,
     extraArgs: opts.extraArgs,
     env: opts.env,
+    model: opts.model,
   });
 
   try {
@@ -1744,6 +1763,8 @@ export async function runPlanSkillCounting(opts: {
   timeoutMs?: number;
   /** Extra env merged into the spawned `claude` process. */
   env?: Record<string, string>;
+  /** Override the spawned model. Defaults via launchClaudePty's chain. */
+  model?: string;
 }): Promise<PlanSkillCountObservation> {
   const startedAt = Date.now();
   const defaultPick = opts.defaultPick ?? 1;
@@ -1754,6 +1775,7 @@ export async function runPlanSkillCounting(opts: {
     cwd: opts.cwd,
     timeoutMs: timeoutMs + 60_000,
     env: opts.env,
+    model: opts.model,
   });
 
   const fingerprints: AskUserQuestionFingerprint[] = [];
@@ -1975,6 +1997,8 @@ export async function runPlanSkillFloorCheck(opts: {
   timeoutMs?: number;
   /** Extra env merged into the spawned `claude` process. */
   env?: Record<string, string>;
+  /** Override the spawned model. Defaults via launchClaudePty's chain. */
+  model?: string;
 }): Promise<PlanSkillFloorObservation> {
   const startedAt = Date.now();
   const timeoutMs = opts.timeoutMs ?? 600_000;
@@ -1984,6 +2008,7 @@ export async function runPlanSkillFloorCheck(opts: {
     cwd: opts.cwd,
     timeoutMs: timeoutMs + 60_000,
     env: opts.env,
+    model: opts.model,
   });
 
   try {
