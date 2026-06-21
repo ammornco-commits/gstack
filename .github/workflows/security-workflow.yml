@@ -53,7 +53,7 @@ jobs:
           echo "report_path=gitleaks.sarif" >> "$GITHUB_OUTPUT"
       - name: Upload SARIF alerts
         if: always() && hashFiles('gitleaks.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -106,7 +106,7 @@ jobs:
           echo "report_path=trivy.sarif" >> "$GITHUB_OUTPUT"
       - name: Upload SARIF alerts
         if: always() && hashFiles('trivy.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy.sarif
           category: trivy
@@ -120,22 +120,24 @@ jobs:
   codeql:
     name: Run CodeQL analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: javascript
           queries: security-and-quality
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
 
   reporting:
     name: Build security compliance inputs
     runs-on: ubuntu-latest
+    if: always()
     needs:
       - secret-scan
       - dependency-scan
